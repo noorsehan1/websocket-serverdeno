@@ -1,130 +1,111 @@
-const clients = new Map<string, WebSocket>();
-const rooms = new Map<string, Set<string>>();
+import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
-Deno.serve((req) => {
-  const upgradeHeader = req.headers.get("upgrade") || "";
+interface WebSocketWithRoom extends WebSocket {
+  roomname?: string;
+  idtarget?: string;
+}
 
-  if (upgradeHeader.toLowerCase() !== "websocket") {
-    return new Response("This endpoint only supports WebSocket connections", {
-      status: 400,
-    });
+const clients = new Set<WebSocketWithRoom>();
+
+serve((req) => {
+  const upgrade = req.headers.get("upgrade") || "";
+  if (upgrade.toLowerCase() !== "websocket") {
+    return new Response("Expected websocket", { status: 400 });
   }
 
   const { socket, response } = Deno.upgradeWebSocket(req);
-  let userId: string | null = null;
+  const ws = socket as WebSocketWithRoom;
 
-  socket.onopen = () => {
+  clients.add(ws);
+
+  ws.onopen = () => {
     console.log("Client connected");
   };
 
-  socket.onmessage = (event) => {
+  ws.onmessage = (event) => {
     try {
-      // Parse sebagai array JSON
       const data = JSON.parse(event.data);
       if (!Array.isArray(data) || data.length === 0) {
-        socket.send(JSON.stringify(["error", "Invalid message format"]));
+        ws.send(JSON.stringify(["error", "Invalid message format"]));
         return;
       }
 
-      // Tipe pesan selalu di index 0
-      const type = data[0];
-      // Helper untuk mencari nilai di array berdasar key yang muncul setelah type
-      // contoh: ["type", "joinRoom", "roomname", "room6"]
-      // maka roomname = "room6"
-      function getValue(key: string) {
-        const idx = data.indexOf(key);
-        if (idx !== -1 && idx + 1 < data.length) return data[idx + 1];
-        return null;
-      }
+      const eventType = data[0];
 
-      const roomname = getValue("roomname");
-      const idtarget = getValue("idtarget");
+      switch (eventType) {
+        case "setIdTarget": {
+          const userid = data[1];
+          ws.idtarget = userid;
+          console.log(`User setIdTarget: ${userid}`);
 
-      if (!type) {
-        socket.send(JSON.stringify(["error", "Missing type"]));
-        return;
-      }
-
-      if (!userId && type !== "setIdTarget") {
-        socket.send(JSON.stringify(["error", "User ID not set yet"]));
-        return;
-      }
-
-      switch (type) {
-        case "setIdTarget":
-          if (!idtarget) {
-            socket.send(JSON.stringify(["error", "Missing idtarget"]));
-            return;
-          }
-          userId = idtarget;
-          clients.set(userId, socket);
-          console.log(`User registered: ${userId}`);
+          // Optional: acknowledge to client
+          ws.send(JSON.stringify(["setIdTargetAck", userid]));
           break;
+        }
 
-        case "joinRoom":
-          if (!roomname) return;
-          if (!rooms.has(roomname)) {
-            rooms.set(roomname, new Set());
-          }
-          if (userId) {
-            rooms.get(roomname)!.add(userId);
-            console.log(`User ${userId} joined room ${roomname}`);
-          }
+        case "joinRoom": {
+          const roomname = data[1];
+          ws.roomname = roomname;
+          console.log(`User joined room: ${roomname}`);
+
+          // Tidak ada broadcast pesan sistem di sini
           break;
+        }
 
         case "updateKursi":
         case "removeKursi":
         case "chat":
-        case "pointUpdate":
-          if (!roomname || !rooms.has(roomname)) return;
-          rooms.get(roomname)!.forEach((uid) => {
-            const clientSocket = clients.get(uid);
-            if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
-              clientSocket.send(event.data);
-            }
-          });
+        case "pointUpdate": {
+          // Semua event yang broadcast ke room
+          const roomname = data[1];
+          console.log(`Broadcasting ${eventType} event to room ${roomname}`);
+          broadcastToRoom(roomname, data);
           break;
-
-        case "private":
-          if (!idtarget) return;
-          const targetSocket = clients.get(idtarget);
-          if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-            targetSocket.send(event.data);
-          }
-          if (userId && clients.get(userId) !== targetSocket) {
-            const senderSocket = clients.get(userId);
-            if (senderSocket && senderSocket.readyState === WebSocket.OPEN) {
-              senderSocket.send(event.data);
-            }
-          }
-          break;
-
-        default:
-          socket.send(JSON.stringify(["error", "Unknown message type"]));
-          break;
-      }
-    } catch (err) {
-      console.error("Failed to parse message:", err);
-      socket.send(JSON.stringify(["error", "Invalid JSON"]));
-    }
-  };
-
-  socket.onclose = () => {
-    if (userId) {
-      clients.delete(userId);
-      rooms.forEach((userSet, room) => {
-        userSet.delete(userId!);
-        if (userSet.size === 0) {
-          rooms.delete(room);
         }
-      });
-      console.log(`User disconnected: ${userId}`);
+
+        case "private": {
+          const idtarget = data[1];
+          console.log(`Sending private message to ${idtarget}`);
+          sendToIdtarget(idtarget, data);
+          break;
+        }
+
+        default: {
+          console.log(`Unknown event type: ${eventType}`);
+          ws.send(JSON.stringify(["error", "Unknown event type"]));
+        }
+      }
+    } catch (e) {
+      console.error("Error parsing message:", e);
+      ws.send(JSON.stringify(["error", "Failed to parse message"]));
     }
   };
 
-  socket.onerror = (err) => {
-    console.error("Socket error:", err);
+  ws.onclose = () => {
+    clients.delete(ws);
+    console.log("Client disconnected");
+  };
+
+  ws.onerror = (err) => {
+    console.error("WebSocket error:", err);
   };
 
   return response;
 });
+
+function broadcastToRoom(roomname: string, message: any[]) {
+  for (const client of clients) {
+    if (client.roomname === roomname) {
+      client.send(JSON.stringify(message));
+    }
+  }
+}
+
+function sendToIdtarget(idtarget: string, message: any[]) {
+  for (const client of clients) {
+    if (client.idtarget === idtarget) {
+      client.send(JSON.stringify(message));
+      break;
+    }
+  }
+}
