@@ -47,8 +47,6 @@ serve((req) => {
           const roomname = data[1];
           ws.roomname = roomname;
           console.log(`User joined room: ${roomname}`);
-
-          // Tidak ada broadcast pesan sistem di sini
           break;
         }
 
@@ -56,7 +54,6 @@ serve((req) => {
         case "removeKursi":
         case "chat":
         case "pointUpdate": {
-          // Semua event yang broadcast ke room
           const roomname = data[1];
           console.log(`Broadcasting ${eventType} event to room ${roomname}`);
           broadcastToRoom(roomname, data);
@@ -65,8 +62,39 @@ serve((req) => {
 
         case "private": {
           const idtarget = data[1];
-          console.log(`Sending private message to ${idtarget}`);
-          sendToIdtarget(idtarget, data);
+          const noimageUrl = data[2];
+          const messageData = data[3];
+          const sender = data[5];
+          const replyToMessageId = data.length > 6 ? data[6] : null;
+
+          // Timestamp dibuat server
+         const timestamp = Date.now(); // timestamp dalam milidetik
+
+
+          const msgToSend = [
+            "private",
+            noimageUrl,
+            messageData,
+            timestamp,
+            sender,
+            replyToMessageId,
+          ];
+
+          let sent = false;
+          for (const client of clients) {
+            if (client.idtarget === idtarget) {
+              client.send(JSON.stringify(msgToSend));
+              sent = true;
+              break;
+            }
+          }
+
+          if (!sent) {
+            // Kirim notifikasi gagal ke pengirim (ws.idtarget = pengirim)
+            if (ws.idtarget) {
+              ws.send(JSON.stringify(["privateFailed", idtarget, "User not online"]));
+            }
+          }
           break;
         }
 
@@ -97,15 +125,6 @@ function broadcastToRoom(roomname: string, message: any[]) {
   for (const client of clients) {
     if (client.roomname === roomname) {
       client.send(JSON.stringify(message));
-    }
-  }
-}
-
-function sendToIdtarget(idtarget: string, message: any[]) {
-  for (const client of clients) {
-    if (client.idtarget === idtarget) {
-      client.send(JSON.stringify(message));
-      break;
     }
   }
 }
