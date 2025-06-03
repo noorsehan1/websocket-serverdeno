@@ -3,9 +3,19 @@ import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 interface WebSocketWithRoom extends WebSocket {
   roomname?: string;
   idtarget?: string;
+  numkursi?: number;
 }
 
 const clients = new Set<WebSocketWithRoom>();
+
+// Daftar room statis, bisa ganti sesuai kebutuhan
+const allRooms = new Set([
+  "room1",
+  "room2",
+  "room3",
+  "room4",
+  "room5",
+]);
 
 serve((req) => {
   const upgrade = req.headers.get("upgrade") || "";
@@ -42,18 +52,48 @@ serve((req) => {
         }
 
         case "joinRoom": {
-          const roomname = data[1];
-          ws.roomname = roomname;
-          console.log(`User joined room: ${roomname}`);
+          const newRoom = data[1];
+
+          if (ws.roomname && typeof ws.numkursi === "number") {
+            const disconnectMsg = ["userDisconnected", ws.roomname, ws.numkursi];
+            broadcastToRoom(ws.roomname, disconnectMsg);
+            broadcastRoomUserCount(ws.roomname); // update old room
+          }
+
+          ws.roomname = newRoom;
+          ws.numkursi = undefined;
+
+          console.log(`User joined room: ${newRoom}`);
+          broadcastRoomUserCount(newRoom); // update new room
           break;
         }
 
-        case "updateKursi":
-        case "removeKursi":
+        case "updateKursi": {
+          const roomname = data[1];
+          const numkursi = data[2];
+          ws.roomname = roomname;
+          ws.numkursi = numkursi;
+          broadcastToRoom(roomname, data);
+          broadcastRoomUserCount(roomname);
+          break;
+        }
+
+        case "removeKursi": {
+          const roomname = data[1];
+          const numkursi = data[2];
+
+          if (ws.roomname === roomname && ws.numkursi === numkursi) {
+            ws.numkursi = undefined;
+          }
+
+          broadcastToRoom(roomname, data);
+          broadcastRoomUserCount(roomname);
+          break;
+        }
+
         case "chat":
         case "pointUpdate": {
           const roomname = data[1];
-          console.log(`Broadcasting ${eventType} event to room ${roomname}`);
           broadcastToRoom(roomname, data);
           break;
         }
@@ -63,7 +103,6 @@ serve((req) => {
           const noimageUrl = data[2];
           const messageData = data[3];
           const sender = data[4];
-          const replyToMessageId = data.length > 5 ? data[5] : null;
 
           const timestamp = Date.now();
           const msgToSend = [
@@ -72,7 +111,6 @@ serve((req) => {
             messageData,
             timestamp,
             sender,
-            replyToMessageId,
           ];
 
           let sent = false;
@@ -84,28 +122,28 @@ serve((req) => {
             }
           }
 
-          if (!sent) {
-            if (ws.idtarget) {
-              ws.send(JSON.stringify(["privateFailed", idtarget, "User not online"]));
-            }
+          if (!sent && ws.idtarget) {
+            ws.send(JSON.stringify(["privateFailed", idtarget, "User not online"]));
           }
           break;
         }
 
-        case "cekUserOnline": {
-          const userid = data[1];
+        case "isUserOnline": {
+          const targetId = data[1];
           let isOnline = false;
-
           for (const client of clients) {
-            if (client.idtarget === userid) {
+            if (client.idtarget === targetId) {
               isOnline = true;
               break;
             }
           }
+          ws.send(JSON.stringify(["userOnlineStatus", targetId, isOnline]));
+          break;
+        }
 
-          if (ws.idtarget) {
-            ws.send(JSON.stringify(["userOnlineStatus", userid, isOnline]));
-          }
+        case "getAllRoomsUserCount": {
+          const counts = getJumlahRoom();
+          ws.send(JSON.stringify(["allRoomsUserCount", counts]));
           break;
         }
 
@@ -121,6 +159,12 @@ serve((req) => {
   };
 
   ws.onclose = () => {
+    if (ws.roomname && typeof ws.numkursi === "number") {
+      const disconnectMsg = ["userDisconnected", ws.roomname, ws.numkursi];
+      broadcastToRoom(ws.roomname, disconnectMsg);
+      broadcastRoomUserCount(ws.roomname);
+    }
+
     clients.delete(ws);
     console.log("Client disconnected");
   };
@@ -139,3 +183,45 @@ function broadcastToRoom(roomname: string, message: any[]) {
     }
   }
 }
+
+function getJumlahRoom(): Record<string, number> {
+  const countMap: Record<string, number> = {};
+
+  // Init semua room dengan 0
+  for (const r of allRooms) {
+    countMap[r] = 0;
+  }
+
+  // Hitung user per room berdasarkan clients
+  for (const client of clients) {
+    if (client.roomname && client.numkursi !== undefined) {
+      countMap[client.roomname] = (countMap[client.roomname] || 0) + 1;
+    }
+  }
+
+  return countMap;
+}
+
+// ✅ Tambahan baru: broadcast jumlah user di satu room ke user dalam room itu saja
+function broadcastRoomUserCount(roomname: string) {
+  const count = getJumlahRoom()[roomname];
+  const message = ["roomUserCount", roomname, count];
+
+  for (const client of clients) {
+    if (client.roomname === roomname) {
+      client.send(JSON.stringify(message));
+    }
+  }
+}
+
+
+function getAllNumKursiInRoom(roomname: string): number[] {
+  const kursiList: number[] = [];
+  for (const client of clients) {
+    if (client.roomname === roomname && client.numkursi !== undefined) {
+      kursiList.push(client.numkursi);
+    }
+  }
+  return kursiList;
+}
+
