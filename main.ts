@@ -37,8 +37,6 @@ serve((req) => {
           const userid = data[1];
           ws.idtarget = userid;
           console.log(`User setIdTarget: ${userid}`);
-
-          // Kirim balasan bahwa ID sudah diset
           ws.send(JSON.stringify(["setIdTargetAck", userid]));
           break;
         }
@@ -55,7 +53,7 @@ serve((req) => {
         case "chat":
         case "pointUpdate": {
           const roomname = data[1];
-          console.log(`Broadcasting ${eventType} to room ${roomname}`);
+          console.log(`Broadcasting ${eventType} event to room ${roomname}`);
           broadcastToRoom(roomname, data);
           break;
         }
@@ -65,16 +63,16 @@ serve((req) => {
           const noimageUrl = data[2];
           const messageData = data[3];
           const sender = data[4];
+          const replyToMessageId = data.length > 5 ? data[5] : null;
 
-          // Buat timestamp dari server
           const timestamp = Date.now();
-
           const msgToSend = [
             "private",
             noimageUrl,
             messageData,
             timestamp,
-            sender
+            sender,
+            replyToMessageId,
           ];
 
           let sent = false;
@@ -90,6 +88,23 @@ serve((req) => {
             if (ws.idtarget) {
               ws.send(JSON.stringify(["privateFailed", idtarget, "User not online"]));
             }
+          }
+          break;
+        }
+
+        case "cekUserOnline": {
+          const userid = data[1];
+          let isOnline = false;
+
+          for (const client of clients) {
+            if (client.idtarget === userid) {
+              isOnline = true;
+              break;
+            }
+          }
+
+          if (ws.idtarget) {
+            ws.send(JSON.stringify(["userOnlineStatus", userid, isOnline]));
           }
           break;
         }
@@ -117,7 +132,6 @@ serve((req) => {
   return response;
 });
 
-// Helper: broadcast pesan ke room
 function broadcastToRoom(roomname: string, message: any[]) {
   for (const client of clients) {
     if (client.roomname === roomname) {
