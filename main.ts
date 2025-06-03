@@ -1,7 +1,15 @@
 const clients = new Map<string, WebSocket>();
 const rooms = new Map<string, Set<string>>();
 
-Deno.serve(async (req: Request) => {
+Deno.serve((req) => {
+  const upgradeHeader = req.headers.get("upgrade") || "";
+
+  if (upgradeHeader.toLowerCase() !== "websocket") {
+    return new Response("This endpoint only supports WebSocket connections", {
+      status: 400,
+    });
+  }
+
   const { socket, response } = Deno.upgradeWebSocket(req);
   let userId: string | null = null;
 
@@ -13,6 +21,7 @@ Deno.serve(async (req: Request) => {
     try {
       const data = JSON.parse(event.data);
       const { type, roomname, idtarget } = data;
+      console.log("Received:", data);
 
       if (!type) {
         socket.send(JSON.stringify({ type: "error", message: "Missing type" }));
@@ -20,7 +29,7 @@ Deno.serve(async (req: Request) => {
       }
 
       if (!userId && type !== "setIdTarget") {
-        socket.send(JSON.stringify({ type: "error", message: "User ID not set" }));
+        socket.send(JSON.stringify({ type: "error", message: "User ID not set yet" }));
         return;
       }
 
@@ -32,6 +41,7 @@ Deno.serve(async (req: Request) => {
             return;
           }
           clients.set(userId, socket);
+          console.log(`User registered: ${userId}`);
           break;
 
         case "joinRoom":
@@ -39,7 +49,10 @@ Deno.serve(async (req: Request) => {
           if (!rooms.has(roomname)) {
             rooms.set(roomname, new Set());
           }
-          rooms.get(roomname)!.add(userId);
+          if (userId) {
+            rooms.get(roomname)!.add(userId);
+            console.log(`User ${userId} joined room ${roomname}`);
+          }
           break;
 
         case "updateKursi":
@@ -48,28 +61,33 @@ Deno.serve(async (req: Request) => {
         case "pointUpdate":
           if (!roomname || !rooms.has(roomname)) return;
           rooms.get(roomname)!.forEach((uid) => {
-            const client = clients.get(uid);
-            if (client) {
-              client.send(JSON.stringify(data));
+            const clientSocket = clients.get(uid);
+            if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
+              clientSocket.send(event.data);
             }
           });
           break;
 
         case "private":
           if (!idtarget) return;
-          const target = clients.get(idtarget);
-          if (target) target.send(JSON.stringify(data));
-          if (userId && clients.get(userId) !== target) {
-            clients.get(userId)?.send(JSON.stringify(data));
+          const targetSocket = clients.get(idtarget);
+          if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
+            targetSocket.send(event.data);
+          }
+          if (userId && clients.get(userId) !== targetSocket) {
+            const senderSocket = clients.get(userId);
+            if (senderSocket && senderSocket.readyState === WebSocket.OPEN) {
+              senderSocket.send(event.data);
+            }
           }
           break;
 
         default:
-          socket.send(JSON.stringify({ type: "error", message: "Unknown type" }));
+          socket.send(JSON.stringify({ type: "error", message: "Unknown message type" }));
           break;
       }
-
-    } catch {
+    } catch (err) {
+      console.error("Failed to parse message:", err);
       socket.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
     }
   };
@@ -77,10 +95,13 @@ Deno.serve(async (req: Request) => {
   socket.onclose = () => {
     if (userId) {
       clients.delete(userId);
-      rooms.forEach((set, room) => {
-        set.delete(userId!);
-        if (set.size === 0) rooms.delete(room);
+      rooms.forEach((userSet, room) => {
+        userSet.delete(userId!);
+        if (userSet.size === 0) {
+          rooms.delete(room);
+        }
       });
+      console.log(`User disconnected: ${userId}`);
     }
   };
 
