@@ -1,3 +1,4 @@
+// server.ts
 import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
 interface WebSocketWithRoom extends WebSocket {
@@ -8,7 +9,7 @@ interface WebSocketWithRoom extends WebSocket {
 
 const clients = new Set<WebSocketWithRoom>();
 
-// Daftar room statis, bisa ganti sesuai kebutuhan
+// Daftar room statis
 const allRooms = new Set([
   "room1",
   "room2",
@@ -25,7 +26,6 @@ serve((req) => {
 
   const { socket, response } = Deno.upgradeWebSocket(req);
   const ws = socket as WebSocketWithRoom;
-
   clients.add(ws);
 
   ws.onopen = () => {
@@ -43,6 +43,7 @@ serve((req) => {
       const eventType = data[0];
 
       switch (eventType) {
+        // 1) Set ID target untuk private chat
         case "setIdTarget": {
           const userid = data[1];
           ws.idtarget = userid;
@@ -51,23 +52,29 @@ serve((req) => {
           break;
         }
 
+        // 2) Join a room
         case "joinRoom": {
           const newRoom = data[1];
 
+          // Jika sebelumnya sudah di room lain: broadcast disconnection & update count
           if (ws.roomname && typeof ws.numkursi === "number") {
-            const disconnectMsg = ["userDisconnected", ws.roomname, ws.numkursi];
-            broadcastToRoom(ws.roomname, disconnectMsg);
-            broadcastRoomUserCount(ws.roomname); // update old room
+            broadcastToRoom(ws.roomname, ["userDisconnected", ws.roomname, ws.numkursi]);
+            broadcastRoomUserCount(ws.roomname);
           }
 
           ws.roomname = newRoom;
           ws.numkursi = undefined;
 
           console.log(`User joined room: ${newRoom}`);
-          broadcastRoomUserCount(newRoom); // update new room
+          broadcastRoomUserCount(newRoom);
+
+          // Kirim list kursi yang sudah terisi ke user baru
+          const kursiList = getAllNumKursiInRoom(newRoom);
+          ws.send(JSON.stringify(["numKursiList", newRoom, kursiList]));
           break;
         }
 
+        // 3) Update kursi (occupy)
         case "updateKursi": {
           const roomname = data[1];
           const numkursi = data[2];
@@ -78,19 +85,19 @@ serve((req) => {
           break;
         }
 
+        // 4) Remove kursi (free)
         case "removeKursi": {
           const roomname = data[1];
           const numkursi = data[2];
-
           if (ws.roomname === roomname && ws.numkursi === numkursi) {
             ws.numkursi = undefined;
           }
-
           broadcastToRoom(roomname, data);
           broadcastRoomUserCount(roomname);
           break;
         }
 
+        // 5) Chat & point update (dibroadcast saja)
         case "chat":
         case "pointUpdate": {
           const roomname = data[1];
@@ -98,20 +105,14 @@ serve((req) => {
           break;
         }
 
+        // 6) Private message
         case "private": {
           const idtarget = data[1];
           const noimageUrl = data[2];
           const messageData = data[3];
           const sender = data[4];
-
           const timestamp = Date.now();
-          const msgToSend = [
-            "private",
-            noimageUrl,
-            messageData,
-            timestamp,
-            sender,
-          ];
+          const msgToSend = ["private", noimageUrl, messageData, timestamp, sender];
 
           let sent = false;
           for (const client of clients) {
@@ -121,29 +122,31 @@ serve((req) => {
               break;
             }
           }
-
           if (!sent && ws.idtarget) {
             ws.send(JSON.stringify(["privateFailed", idtarget, "User not online"]));
           }
           break;
         }
 
+        // 7) Cek status online user lain
         case "isUserOnline": {
           const targetId = data[1];
-          let isOnline = false;
-          for (const client of clients) {
-            if (client.idtarget === targetId) {
-              isOnline = true;
-              break;
-            }
-          }
+          const isOnline = Array.from(clients).some(c => c.idtarget === targetId);
           ws.send(JSON.stringify(["userOnlineStatus", targetId, isOnline]));
           break;
         }
 
+        // 8) Minta semua room user count
         case "getAllRoomsUserCount": {
-          const counts = getJumlahRoom();
-          ws.send(JSON.stringify(["allRoomsUserCount", counts]));
+          handleGetAllRoomsUserCount(ws);
+          break;
+        }
+
+        // 9) Minta list kursi terisi dalam satu room
+        case "getAllNumKursi": {
+          const roomname = data[1];
+          const kursiList = getAllNumKursiInRoom(roomname);
+          ws.send(JSON.stringify(["numKursiList", roomname, kursiList]));
           break;
         }
 
@@ -159,12 +162,11 @@ serve((req) => {
   };
 
   ws.onclose = () => {
+    // Broadcast jika user disconnect sambil duduk di kursi
     if (ws.roomname && typeof ws.numkursi === "number") {
-      const disconnectMsg = ["userDisconnected", ws.roomname, ws.numkursi];
-      broadcastToRoom(ws.roomname, disconnectMsg);
+      broadcastToRoom(ws.roomname, ["userDisconnected", ws.roomname, ws.numkursi]);
       broadcastRoomUserCount(ws.roomname);
     }
-
     clients.delete(ws);
     console.log("Client disconnected");
   };
@@ -176,6 +178,7 @@ serve((req) => {
   return response;
 });
 
+/** Kirim message ke semua client di satu room */
 function broadcastToRoom(roomname: string, message: any[]) {
   for (const client of clients) {
     if (client.roomname === roomname) {
@@ -184,44 +187,40 @@ function broadcastToRoom(roomname: string, message: any[]) {
   }
 }
 
+/** Hitung jumlah user per room */
 function getJumlahRoom(): Record<string, number> {
   const countMap: Record<string, number> = {};
-
-  // Init semua room dengan 0
   for (const r of allRooms) {
     countMap[r] = 0;
   }
-
-  // Hitung user per room berdasarkan clients
   for (const client of clients) {
     if (client.roomname && client.numkursi !== undefined) {
-      countMap[client.roomname] = (countMap[client.roomname] || 0) + 1;
+      countMap[client.roomname]++;
     }
   }
-
   return countMap;
 }
 
-// ✅ Tambahan baru: broadcast jumlah user di satu room ke user dalam room itu saja
+/** Kirim roomUserCount hanya ke client di room tersebut */
 function broadcastRoomUserCount(roomname: string) {
-  const count = getJumlahRoom()[roomname];
-  const message = ["roomUserCount", roomname, count];
-
+  const count = getJumlahRoom()[roomname] ?? 0;
+  const msg = ["roomUserCount", roomname, count];
   for (const client of clients) {
     if (client.roomname === roomname) {
-      client.send(JSON.stringify(message));
+      client.send(JSON.stringify(msg));
     }
   }
 }
 
-
+/** Ambil semua kursi (numkursi) yang terisi di room */
 function getAllNumKursiInRoom(roomname: string): number[] {
-  const kursiList: number[] = [];
-  for (const client of clients) {
-    if (client.roomname === roomname && client.numkursi !== undefined) {
-      kursiList.push(client.numkursi);
-    }
-  }
-  return kursiList;
+  return Array.from(clients)
+    .filter(c => c.roomname === roomname && c.numkursi !== undefined)
+    .map(c => c.numkursi as number);
 }
 
+/** Handler untuk getAllRoomsUserCount */
+function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
+  const counts = getJumlahRoom();
+  ws.send(JSON.stringify(["allRoomsUserCount", counts]));
+}
