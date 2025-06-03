@@ -5,26 +5,24 @@ Deno.serve((req) => {
   const upgradeHeader = req.headers.get("upgrade") || "";
 
   if (upgradeHeader.toLowerCase() !== "websocket") {
-    return new Response("This endpoint only supports WebSocket connections", {
-      status: 400,
-    });
+    return new Response("This endpoint only supports WebSocket connections", { status: 400 });
   }
 
   const { socket, response } = Deno.upgradeWebSocket(req);
   let userId: string | null = null;
 
   socket.onopen = () => {
-    console.log("Client connected");
+    console.log("✅ Client connected");
   };
 
   socket.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
       const { type, roomname, idtarget } = data;
-      console.log("Received:", data);
+      console.log("📨 Received:", data);
 
-      if (!type) {
-        socket.send(JSON.stringify({ type: "error", message: "Missing type" }));
+      if (!type || typeof type !== "string") {
+        socket.send(JSON.stringify({ type: "error", message: "Missing or invalid type" }));
         return;
       }
 
@@ -34,46 +32,52 @@ Deno.serve((req) => {
       }
 
       switch (type) {
-        case "setIdTarget":
+        case "setIdTarget": {
           userId = idtarget;
-          if (!userId) {
-            socket.send(JSON.stringify({ type: "error", message: "Missing idtarget" }));
+          if (!userId || typeof userId !== "string") {
+            socket.send(JSON.stringify({ type: "error", message: "Missing or invalid idtarget" }));
             return;
           }
           clients.set(userId, socket);
-          console.log(`User registered: ${userId}`);
+          console.log(`👤 User registered: ${userId}`);
           break;
+        }
 
-        case "joinRoom":
-          if (!roomname) return;
+        case "joinRoom": {
+          if (!roomname || typeof roomname !== "string") return;
           if (!rooms.has(roomname)) {
             rooms.set(roomname, new Set());
           }
-          if (userId) {
-            rooms.get(roomname)!.add(userId);
-            console.log(`User ${userId} joined room ${roomname}`);
-          }
+          rooms.get(roomname)!.add(userId!);
+          console.log(`👥 ${userId} joined room ${roomname}`);
           break;
+        }
 
         case "updateKursi":
         case "removeKursi":
         case "chat":
-        case "pointUpdate":
-          if (!roomname || !rooms.has(roomname)) return;
-          rooms.get(roomname)!.forEach((uid) => {
+        case "pointUpdate": {
+          if (!roomname || typeof roomname !== "string") return;
+          const members = rooms.get(roomname);
+          if (!members) return;
+
+          for (const uid of members) {
             const clientSocket = clients.get(uid);
             if (clientSocket && clientSocket.readyState === WebSocket.OPEN) {
               clientSocket.send(event.data);
             }
-          });
+          }
           break;
+        }
 
-        case "private":
-          if (!idtarget) return;
+        case "private": {
+          if (!idtarget || typeof idtarget !== "string") return;
+
           const targetSocket = clients.get(idtarget);
           if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
             targetSocket.send(event.data);
           }
+
           if (userId && clients.get(userId) !== targetSocket) {
             const senderSocket = clients.get(userId);
             if (senderSocket && senderSocket.readyState === WebSocket.OPEN) {
@@ -81,14 +85,14 @@ Deno.serve((req) => {
             }
           }
           break;
+        }
 
         default:
-          socket.send(JSON.stringify({ type: "error", message: "Unknown message type" }));
-          break;
+          socket.send(JSON.stringify({ type: "error", message: `Unknown message type: ${type}` }));
       }
     } catch (err) {
-      console.error("Failed to parse message:", err);
-      socket.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
+      console.error("❌ Failed to parse message:", err);
+      socket.send(JSON.stringify({ type: "error", message: "Invalid JSON format" }));
     }
   };
 
@@ -101,12 +105,12 @@ Deno.serve((req) => {
           rooms.delete(room);
         }
       });
-      console.log(`User disconnected: ${userId}`);
+      console.log(`🔌 Disconnected: ${userId}`);
     }
   };
 
   socket.onerror = (err) => {
-    console.error("Socket error:", err);
+    console.error("⚠️ Socket error:", err);
   };
 
   return response;
