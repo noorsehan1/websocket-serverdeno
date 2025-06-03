@@ -38,7 +38,7 @@ serve((req) => {
           ws.idtarget = userid;
           console.log(`User setIdTarget: ${userid}`);
 
-          // Optional: acknowledge to client
+          // Kirim balasan bahwa ID sudah diset
           ws.send(JSON.stringify(["setIdTargetAck", userid]));
           break;
         }
@@ -55,7 +55,7 @@ serve((req) => {
         case "chat":
         case "pointUpdate": {
           const roomname = data[1];
-          console.log(`Broadcasting ${eventType} event to room ${roomname}`);
+          console.log(`Broadcasting ${eventType} to room ${roomname}`);
           broadcastToRoom(roomname, data);
           break;
         }
@@ -64,20 +64,17 @@ serve((req) => {
           const idtarget = data[1];
           const noimageUrl = data[2];
           const messageData = data[3];
-          const sender = data[5];
-          const replyToMessageId = data.length > 6 ? data[6] : null;
+          const sender = data[4];
 
-          // Timestamp dibuat server
-         const timestamp = Date.now(); // timestamp dalam milidetik
-
+          // Buat timestamp dari server
+          const timestamp = Date.now();
 
           const msgToSend = [
             "private",
             noimageUrl,
             messageData,
             timestamp,
-            sender,
-            replyToMessageId,
+            sender
           ];
 
           let sent = false;
@@ -90,7 +87,6 @@ serve((req) => {
           }
 
           if (!sent) {
-            // Kirim notifikasi gagal ke pengirim (ws.idtarget = pengirim)
             if (ws.idtarget) {
               ws.send(JSON.stringify(["privateFailed", idtarget, "User not online"]));
             }
@@ -121,6 +117,7 @@ serve((req) => {
   return response;
 });
 
+// Helper: broadcast pesan ke room
 function broadcastToRoom(roomname: string, message: any[]) {
   for (const client of clients) {
     if (client.roomname === roomname) {
