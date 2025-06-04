@@ -82,6 +82,41 @@ function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
   }
 }
 
+// ========== BAGIAN BARU UNTUK BATCHING updatePoint ==========
+// Buffer untuk batch updatePoint: Map<room, Map<seat, Array<Point>>>
+const pointUpdateBuffer: Map<
+  RoomName,
+  Map<
+    number, // seat
+    Array<{ x: number; y: number; fast: boolean }>
+  >
+> = new Map();
+
+function flushPointUpdates() {
+  for (const [room, seatMap] of pointUpdateBuffer) {
+    for (const [seat, points] of seatMap) {
+      if (points.length > 0) {
+        // Kirim setiap point sebagai event terpisah (bisa dikembangkan jadi bulk jika perlu)
+        for (const p of points) {
+          broadcastToRoom(room, [
+            "pointUpdated",
+            room,
+            seat,
+            p.x,
+            p.y,
+            p.fast,
+          ]);
+        }
+        points.length = 0; // reset buffer
+      }
+    }
+  }
+}
+
+// Interval flush tiap 100ms
+setInterval(flushPointUpdates, 100);
+// ==============================================================
+
 serve((req) => {
   const upgrade = req.headers.get("upgrade") || "";
   if (upgrade.toLowerCase() !== "websocket") {
@@ -222,7 +257,17 @@ serve((req) => {
           if (!seatInfo) break;
 
           seatInfo.points.push({ x, y, fast });
-          broadcastToRoom(room, ["pointUpdated", room, seat, x, y, fast]);
+
+          // Tambahkan ke batch buffer, jangan langsung broadcast
+          if (!pointUpdateBuffer.has(room)) {
+            pointUpdateBuffer.set(room, new Map());
+          }
+          const roomBuffer = pointUpdateBuffer.get(room)!;
+          if (!roomBuffer.has(seat)) {
+            roomBuffer.set(seat, []);
+          }
+          roomBuffer.get(seat)!.push({ x, y, fast });
+
           break;
         }
 
