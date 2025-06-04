@@ -75,11 +75,11 @@ function getAllNumKursiInRoom(room: RoomName): number[] {
     .sort((a, b) => a - b);
 }
 
+// **Perbaikan utama di sini**
 function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
   const allCounts = getJumlahRoom();
-  for (const room in allCounts) {
-    ws.send(JSON.stringify(["allRoomsUserCount", room, allCounts[room as RoomName]]));
-  }
+  // Kirim satu pesan dengan semua data sekaligus
+  ws.send(JSON.stringify(["allRoomsUserCount", allCounts]));
 }
 
 // ===== Buffer untuk batch update point =====
