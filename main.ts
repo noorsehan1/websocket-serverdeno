@@ -182,8 +182,38 @@ serve((req) => {
           broadcastToRoom(room, ["numKursiList", room, getAllNumKursiInRoom(room)]);
           break;
         }
+        case "removePoint": {
+          // data format: ["removePoint", roomName, seatNumber]
+          const [, room, seat] = data;
+          if (!allRooms.has(room)) {
+            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
+            break;
+          }
+          const seatInfo = roomSeats.get(room)!.get(seat);
+          if (!seatInfo) {
+            ws.send(JSON.stringify(["error", `Seat not found: ${seat} in ${room}`]));
+            break;
+          }
+          seatInfo.points = []; // Clear all points for that seat
+          broadcastToRoom(room, data); // Broadcast removal of points to all clients in room
+          break;
+        }
         case "chat":
         case "pointUpdate": {
+          const room = data[1];
+          if (!allRooms.has(room)) {
+            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
+            break;
+          }
+          if (evt === "pointUpdate") {
+            // Update the points for a seat
+            // Format: ["pointUpdate", roomName, seatNumber, x, y, fast]
+            const [, , seat, x, y, fast] = data;
+            const seatInfo = roomSeats.get(room)!.get(seat);
+            if (seatInfo) {
+              seatInfo.points.push({ x, y, fast });
+            }
+          }
           broadcastToRoom(data[1], data);
           break;
         }
