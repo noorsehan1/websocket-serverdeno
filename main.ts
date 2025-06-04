@@ -104,28 +104,24 @@ serve((req) => {
 
       const evt = data[0];
 
-      switch (evt) {
-        case "setIdTarget": {
-          ws.idtarget = data[1];
-          ws.send(JSON.stringify(["setIdTargetAck", ws.idtarget]));
-          break;
-        }
-        case "private": {
-          const [_, idt, url, msg, sender] = data;
-          const ts = Date.now();
-          const out = ["private", url, msg, ts, sender];
-          let sent = false;
-          for (const c of clients) {
-            if (c.idtarget === idt) {
-              c.send(JSON.stringify(out));
-              sent = true;
-            }
-          }
-          if (!sent && ws.idtarget) {
-            ws.send(JSON.stringify(["privateFailed", idt, "User not online"]));
-          }
-          break;
-        }
+      case "private": {
+  const [_, idt, url, msg, sender] = data;
+  const ts = Date.now();
+  const out = ["private", idt, url, msg, ts, sender];
+
+  let sent = false;
+  for (const c of clients) {
+    if (c.idtarget === idt) {
+      c.send(JSON.stringify(out));
+      sent = true;
+    }
+  }
+  if (!sent && ws.idtarget) {
+    ws.send(JSON.stringify(["privateFailed", idt, "User not online"]));
+  }
+  break;
+}
+
         case "isUserOnline": {
           const target = data[1];
           const online = Array.from(clients).some(c => c.idtarget === target);
