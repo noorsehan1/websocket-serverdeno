@@ -75,24 +75,16 @@ function getAllNumKursiInRoom(room: RoomName): number[] {
     .sort((a, b) => a - b);
 }
 
-// ✅ Versi baru: kirim array list [roomName, jumlah]
 function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
   const allCounts = getJumlahRoom();
   const result: Array<[RoomName, number]> = [];
-
   for (const room of allRooms) {
     result.push([room, allCounts[room]]);
   }
-
   ws.send(JSON.stringify(["allRoomsUserCount", result]));
 }
 
-// ===== Buffer update =====
-const pointUpdateBuffer: Map<
-  RoomName,
-  Map<number, Array<{ x: number; y: number; fast: boolean }>>
-> = new Map();
-
+const pointUpdateBuffer: Map<RoomName, Map<number, Array<{ x: number; y: number; fast: boolean }>>> = new Map();
 const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
 
 function flushPointUpdates() {
@@ -214,14 +206,10 @@ serve((req) => {
               broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
             }
             broadcastRoomUserCount(ws.roomname);
-            broadcastToRoom(ws.roomname, ["numKursiList", ws.roomname, getAllNumKursiInRoom(ws.roomname)]);
           }
 
           ws.roomname = newRoom;
           ws.numkursi = new Set([foundSeat]);
-
-          // TIDAK LANGSUNG SET seatMap di sini
-          // Tunggu client kirim event "updateKursi" untuk isi data kursi
 
           ws.send(JSON.stringify(["numberKursiSaya", foundSeat]));
 
@@ -239,7 +227,6 @@ serve((req) => {
           ws.send(JSON.stringify(["allUpdateKursiList", newRoom, meta]));
 
           broadcastRoomUserCount(newRoom);
-          broadcastToRoom(newRoom, ["numKursiList", newRoom, getAllNumKursiInRoom(newRoom)]);
           break;
         }
 
@@ -274,7 +261,6 @@ serve((req) => {
             roomBuffer.set(seat, []);
           }
           roomBuffer.get(seat)!.push({ x, y, fast });
-
           break;
         }
 
@@ -302,7 +288,6 @@ serve((req) => {
 
           seatMap.set(seat, seatInfo);
           roomSeats.get(room)!.set(seat, seatInfo);
-
           break;
         }
 
@@ -323,7 +308,6 @@ serve((req) => {
         broadcastToRoom(room, ["removeKursi", room, s]);
       }
       broadcastRoomUserCount(ws.roomname);
-      broadcastToRoom(ws.roomname, ["numKursiList", ws.roomname, getAllNumKursiInRoom(ws.roomname)]);
     }
     clients.delete(ws);
   };
