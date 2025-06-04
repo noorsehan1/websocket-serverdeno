@@ -219,16 +219,9 @@ serve((req) => {
 
           ws.roomname = newRoom;
           ws.numkursi = new Set([foundSeat]);
-          seatMap.set(foundSeat, {
-            noimageUrl: "",
-            namauser: "tempuser",
-            color: "",
-            itembawah: 0,
-            itematas: 0,
-            vip: false,
-            viptanda: 0,
-            points: [],
-          });
+
+          // TIDAK LANGSUNG SET seatMap di sini
+          // Tunggu client kirim event "updateKursi" untuk isi data kursi
 
           ws.send(JSON.stringify(["numberKursiSaya", foundSeat]));
 
