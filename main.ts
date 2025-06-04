@@ -82,8 +82,7 @@ function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
   }
 }
 
-// ========== BAGIAN BARU UNTUK BATCHING updatePoint ==========
-// Buffer untuk batch updatePoint: Map<room, Map<seat, Array<Point>>>
+// ===== Buffer untuk batch update point =====
 const pointUpdateBuffer: Map<
   RoomName,
   Map<
@@ -92,11 +91,13 @@ const pointUpdateBuffer: Map<
   >
 > = new Map();
 
+// ===== Buffer untuk batch update kursi =====
+const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
+
 function flushPointUpdates() {
   for (const [room, seatMap] of pointUpdateBuffer) {
     for (const [seat, points] of seatMap) {
       if (points.length > 0) {
-        // Kirim setiap point sebagai event terpisah (bisa dikembangkan jadi bulk jika perlu)
         for (const p of points) {
           broadcastToRoom(room, [
             "pointUpdated",
@@ -113,9 +114,26 @@ function flushPointUpdates() {
   }
 }
 
-// Interval flush tiap 100ms
-setInterval(flushPointUpdates, 100);
-// ==============================================================
+function flushKursiUpdates() {
+  for (const [room, seatMap] of updateKursiBuffer) {
+    const updates: Array<[number, Omit<SeatInfo, "points">]> = [];
+    for (const [seat, info] of seatMap) {
+      // kirim tanpa points supaya ringkas
+      const { points, ...rest } = info;
+      updates.push([seat, rest]);
+    }
+    if (updates.length > 0) {
+      broadcastToRoom(room, ["kursiBatchUpdate", room, updates]);
+      seatMap.clear();
+    }
+  }
+}
+
+// Flush interval 100ms untuk kedua buffer
+setInterval(() => {
+  flushPointUpdates();
+  flushKursiUpdates();
+}, 100);
 
 serve((req) => {
   const upgrade = req.headers.get("upgrade") || "";
@@ -198,6 +216,7 @@ serve((req) => {
             break;
           }
 
+          // Jika sebelumnya sudah di room lain, reset kursi lama
           if (ws.roomname && ws.numkursi) {
             for (const s of ws.numkursi) {
               const oldRoom = ws.roomname!;
@@ -258,7 +277,6 @@ serve((req) => {
 
           seatInfo.points.push({ x, y, fast });
 
-          // Tambahkan ke batch buffer, jangan langsung broadcast
           if (!pointUpdateBuffer.has(room)) {
             pointUpdateBuffer.set(room, new Map());
           }
@@ -277,19 +295,26 @@ serve((req) => {
             ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
             break;
           }
-          const seatMap = roomSeats.get(room)!;
-          const seatInfo = seatMap.get(seat);
-          if (!seatInfo) break;
+          if (!updateKursiBuffer.has(room)) {
+            updateKursiBuffer.set(room, new Map());
+          }
+          const seatMap = updateKursiBuffer.get(room)!;
 
-          seatInfo.noimageUrl = noimageUrl;
-          seatInfo.namauser = namauser;
-          seatInfo.color = color;
-          seatInfo.itembawah = itembawah;
-          seatInfo.itematas = itematas;
-          seatInfo.vip = vip;
-          seatInfo.viptanda = viptanda;
+          const seatInfo: SeatInfo = {
+            noimageUrl,
+            namauser,
+            color,
+            itembawah,
+            itematas,
+            vip: Boolean(vip),
+            viptanda,
+            points: [],
+          };
 
-          broadcastToRoom(room, ["kursiUpdated", room, seat, noimageUrl, namauser, color, itembawah, itematas, vip, viptanda]);
+          seatMap.set(seat, seatInfo);
+          // Update juga di state utama agar konsisten
+          roomSeats.get(room)!.set(seat, seatInfo);
+
           break;
         }
 
