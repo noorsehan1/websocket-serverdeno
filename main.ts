@@ -23,7 +23,6 @@ const allRooms = new Set<RoomName>(["room1", "room2", "room3", "room4", "room5"]
 const MAX_SEATS = 35;
 const clients = new Set<WebSocketWithRoom>();
 
-// Simpan data kursi per room
 const roomSeats: Map<RoomName, Map<number, SeatInfo>> = new Map();
 for (const room of allRooms) {
   const seatMap = new Map<number, SeatInfo>();
@@ -199,7 +198,7 @@ serve((req) => {
               const oldRoom = ws.roomname!;
               resetSeat(roomSeats.get(oldRoom)!.get(s)!);
               broadcastToRoom(oldRoom, ["removePoint", oldRoom, s]);
-              broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
+              
             }
             broadcastRoomUserCount(ws.roomname);
           }
@@ -268,15 +267,16 @@ serve((req) => {
             break;
           }
 
+          resetSeat(roomSeats.get(room)!.get(seat)!);
+
           for (const client of clients) {
             if (client.roomname === room && client.numkursi && client.numkursi.has(seat)) {
-              resetSeat(roomSeats.get(room)!.get(seat)!);
               client.numkursi.delete(seat);
             }
           }
 
           broadcastToRoom(room, ["removePoint", room, seat]);
-          broadcastToRoom(room, ["removeKursi", room, seat]);
+          
           broadcastRoomUserCount(room);
           break;
         }
@@ -308,6 +308,19 @@ serve((req) => {
           break;
         }
 
+        case "resetRoom": {
+          // Reset semua kursi dan points di semua room
+          for (const room of allRooms) {
+            const seatMap = roomSeats.get(room)!;
+            for (let i = 1; i <= MAX_SEATS; i++) {
+              resetSeat(seatMap.get(i)!);
+            }
+            broadcastToRoom(room, ["resetRoom", room]);
+            broadcastRoomUserCount(room);
+          }
+          break;
+        }
+
         default:
           ws.send(JSON.stringify(["error", "Unknown event type"]));
       }
@@ -322,7 +335,7 @@ serve((req) => {
         const room = ws.roomname!;
         resetSeat(roomSeats.get(room)!.get(s)!);
         broadcastToRoom(room, ["removePoint", room, s]);
-        broadcastToRoom(room, ["removeKursi", room, s]);
+       
       }
       broadcastRoomUserCount(ws.roomname);
     }
