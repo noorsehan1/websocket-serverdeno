@@ -75,23 +75,24 @@ function getAllNumKursiInRoom(room: RoomName): number[] {
     .sort((a, b) => a - b);
 }
 
-// **Perbaikan utama di sini**
+// ✅ Versi baru: kirim array list [roomName, jumlah]
 function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
   const allCounts = getJumlahRoom();
-  // Kirim satu pesan dengan semua data sekaligus
-  ws.send(JSON.stringify(["allRoomsUserCount", allCounts]));
+  const result: Array<[RoomName, number]> = [];
+
+  for (const room of allRooms) {
+    result.push([room, allCounts[room]]);
+  }
+
+  ws.send(JSON.stringify(["allRoomsUserCount", result]));
 }
 
-// ===== Buffer untuk batch update point =====
+// ===== Buffer update =====
 const pointUpdateBuffer: Map<
   RoomName,
-  Map<
-    number, // seat
-    Array<{ x: number; y: number; fast: boolean }>
-  >
+  Map<number, Array<{ x: number; y: number; fast: boolean }>>
 > = new Map();
 
-// ===== Buffer untuk batch update kursi =====
 const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
 
 function flushPointUpdates() {
@@ -99,16 +100,9 @@ function flushPointUpdates() {
     for (const [seat, points] of seatMap) {
       if (points.length > 0) {
         for (const p of points) {
-          broadcastToRoom(room, [
-            "pointUpdated",
-            room,
-            seat,
-            p.x,
-            p.y,
-            p.fast,
-          ]);
+          broadcastToRoom(room, ["pointUpdated", room, seat, p.x, p.y, p.fast]);
         }
-        points.length = 0; // reset buffer
+        points.length = 0;
       }
     }
   }
@@ -118,7 +112,6 @@ function flushKursiUpdates() {
   for (const [room, seatMap] of updateKursiBuffer) {
     const updates: Array<[number, Omit<SeatInfo, "points">]> = [];
     for (const [seat, info] of seatMap) {
-      // kirim tanpa points supaya ringkas
       const { points, ...rest } = info;
       updates.push([seat, rest]);
     }
@@ -129,7 +122,6 @@ function flushKursiUpdates() {
   }
 }
 
-// Flush interval 100ms untuk kedua buffer
 setInterval(() => {
   flushPointUpdates();
   flushKursiUpdates();
@@ -160,11 +152,10 @@ serve((req) => {
 
       const evt = data[0];
       switch (evt) {
-        case "setIdTarget": {
+        case "setIdTarget":
           ws.idtarget = data[1];
           ws.send(JSON.stringify(["setIdTargetAck", ws.idtarget]));
           break;
-        }
 
         case "private": {
           const [_, idt, url, msg, sender] = data;
@@ -190,10 +181,9 @@ serve((req) => {
           break;
         }
 
-        case "getAllRoomsUserCount": {
+        case "getAllRoomsUserCount":
           handleGetAllRoomsUserCount(ws);
           break;
-        }
 
         case "joinRoom": {
           const newRoom: RoomName = data[1];
@@ -216,7 +206,6 @@ serve((req) => {
             break;
           }
 
-          // Jika sebelumnya sudah di room lain, reset kursi lama
           if (ws.roomname && ws.numkursi) {
             for (const s of ws.numkursi) {
               const oldRoom = ws.roomname!;
@@ -230,7 +219,16 @@ serve((req) => {
 
           ws.roomname = newRoom;
           ws.numkursi = new Set([foundSeat]);
-          seatMap.set(foundSeat, { noimageUrl: "", namauser: "tempuser", color: "", itembawah: 0, itematas: 0, vip: false, viptanda: 0, points: [] });
+          seatMap.set(foundSeat, {
+            noimageUrl: "",
+            namauser: "tempuser",
+            color: "",
+            itembawah: 0,
+            itematas: 0,
+            vip: false,
+            viptanda: 0,
+            points: [],
+          });
 
           ws.send(JSON.stringify(["numberKursiSaya", foundSeat]));
 
@@ -254,12 +252,10 @@ serve((req) => {
 
         case "chat": {
           const [_, roomname, noImageURL, username, message, usernameColor, chatTextColor] = data;
-
           if (!roomname || !allRooms.has(roomname)) {
             ws.send(JSON.stringify(["error", "Invalid room for chat"]));
             break;
           }
-
           const out = ["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor];
           broadcastToRoom(roomname, out);
           break;
@@ -312,7 +308,6 @@ serve((req) => {
           };
 
           seatMap.set(seat, seatInfo);
-          // Update juga di state utama agar konsisten
           roomSeats.get(room)!.set(seat, seatInfo);
 
           break;
