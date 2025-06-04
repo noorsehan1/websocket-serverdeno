@@ -8,7 +8,7 @@ interface SeatInfo {
   itematas: number;
   vip: boolean;
   viptanda: number;
-  points: Array<{ x: number; y: number; fast: boolean; timestamp: number }>;
+  points: Array<{ x: number; y: number; fast: boolean }>;
 }
 
 interface WebSocketWithRoom extends WebSocket {
@@ -114,7 +114,6 @@ serve((req) => {
           const [_, idt, url, msg, sender] = data;
           const ts = Date.now();
           const out = ["private", idt, url, msg, ts, sender];
-
           let sent = false;
           for (const c of clients) {
             if (c.idtarget === idt) {
@@ -129,7 +128,7 @@ serve((req) => {
         }
         case "isUserOnline": {
           const target = data[1];
-          const online = Array.from(clients).some((c) => c.idtarget === target);
+          const online = Array.from(clients).some(c => c.idtarget === target);
           ws.send(JSON.stringify(["userOnlineStatus", target, online]));
           break;
         }
@@ -181,25 +180,11 @@ serve((req) => {
           broadcastToRoom(room, data);
           broadcastRoomUserCount(room);
           broadcastToRoom(room, ["numKursiList", room, getAllNumKursiInRoom(room)]);
-
-          // Hapus juga semua points pada seat tersebut
-          info.points = [];
           break;
         }
-        case "chat": {
-          const room = data[1];
-          broadcastToRoom(room, data);
-          break;
-        }
+        case "chat":
         case "pointUpdate": {
-          const [, room, seat, point] = data;
-          if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
-            break;
-          }
-          const info = roomSeats.get(room)!.get(seat)!;
-          if (point) info.points.push(point);
-          broadcastToRoom(room, data);
+          broadcastToRoom(data[1], data);
           break;
         }
         case "getAllRoomsUserCount": {
