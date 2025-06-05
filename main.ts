@@ -1,5 +1,12 @@
 import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
+const roomList = ["room1", "room2", "room3", "room4", "room5"] as const;
+type RoomName = typeof roomList[number];
+
+const allRooms = new Set<RoomName>(roomList);
+const MAX_SEATS = 35;
+const clients = new Set<WebSocketWithRoom>();
+
 interface SeatInfo {
   noimageUrl: string;
   namauser: string;
@@ -16,12 +23,6 @@ interface WebSocketWithRoom extends WebSocket {
   idtarget?: string;
   numkursi?: Set<number>;
 }
-
-type RoomName = "room1" | "room2" | "room3" | "room4" | "room5";
-
-const allRooms = new Set<RoomName>(["room1", "room2", "room3", "room4", "room5"]);
-const MAX_SEATS = 35;
-const clients = new Set<WebSocketWithRoom>();
 
 const roomSeats: Map<RoomName, Map<number, SeatInfo>> = new Map();
 for (const room of allRooms) {
@@ -56,7 +57,7 @@ function broadcastToRoom(room: RoomName, msg: any[]) {
 }
 
 function getJumlahRoom(): Record<RoomName, number> {
-  const cnt = { room1: 0, room2: 0, room3: 0, room4: 0, room5: 0 };
+  const cnt = Object.fromEntries(roomList.map(room => [room, 0])) as Record<RoomName, number>;
   for (const c of clients) {
     if (c.roomname && c.numkursi) cnt[c.roomname] += c.numkursi.size;
   }
@@ -70,10 +71,7 @@ function broadcastRoomUserCount(room: RoomName) {
 
 function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
   const allCounts = getJumlahRoom();
-  const result: Array<[RoomName, number]> = [];
-  for (const room of allRooms) {
-    result.push([room, allCounts[room]]);
-  }
+  const result: Array<[RoomName, number]> = roomList.map(room => [room, allCounts[room]]);
   ws.send(JSON.stringify(["allRoomsUserCount", result]));
 }
 
@@ -83,12 +81,10 @@ const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
 function flushPointUpdates() {
   for (const [room, seatMap] of pointUpdateBuffer) {
     for (const [seat, points] of seatMap) {
-      if (points.length > 0) {
-        for (const p of points) {
-          broadcastToRoom(room, ["pointUpdated", room, seat, p.x, p.y, p.fast]);
-        }
-        points.length = 0;
+      for (const p of points) {
+        broadcastToRoom(room, ["pointUpdated", room, seat, p.x, p.y, p.fast]);
       }
+      points.length = 0;
     }
   }
 }
@@ -106,6 +102,26 @@ function flushKursiUpdates() {
     }
   }
 }
+
+// === Timer 2 menit currentNumber 1-6 ===
+let currentNumber = 1;
+const maxNumber = 6;
+const intervalMillis = 2 * 60 * 1000;
+
+function getCurrentNumber() {
+  return currentNumber;
+}
+
+function broadcastNumber(num: number) {
+  for (const c of clients) {
+    c.send(JSON.stringify(["currentNumber", num]));
+  }
+}
+
+setInterval(() => {
+  broadcastNumber(currentNumber);
+  currentNumber = currentNumber < maxNumber ? currentNumber + 1 : 1;
+}, intervalMillis);
 
 setInterval(() => {
   flushPointUpdates();
@@ -142,6 +158,15 @@ serve((req) => {
           ws.send(JSON.stringify(["setIdTargetAck", ws.idtarget]));
           break;
 
+        case "sendnotif": {
+          const [_, idtarget, noimageUrl, username, deskripsi] = data;
+          const notifData = ["notif", noimageUrl, username, deskripsi, Date.now()];
+          for (const c of clients) {
+            if (c.idtarget === idtarget) c.send(JSON.stringify(notifData));
+          }
+          break;
+        }
+
         case "private": {
           const [_, idt, url, msg, sender] = data;
           const ts = Date.now();
@@ -171,6 +196,10 @@ serve((req) => {
           handleGetAllRoomsUserCount(ws);
           break;
 
+        case "getCurrentNumber":
+          ws.send(JSON.stringify(["currentNumber", getCurrentNumber()]));
+          break;
+
         case "joinRoom": {
           const newRoom: RoomName = data[1];
           if (!allRooms.has(newRoom)) {
@@ -196,7 +225,6 @@ serve((req) => {
             for (const s of ws.numkursi) {
               const oldRoom = ws.roomname!;
               resetSeat(roomSeats.get(oldRoom)!.get(s)!);
-             
               broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
             }
             broadcastRoomUserCount(ws.roomname);
@@ -228,8 +256,7 @@ serve((req) => {
             ws.send(JSON.stringify(["error", "Invalid room for chat"]));
             break;
           }
-          const out = ["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor];
-          broadcastToRoom(roomname, out);
+          broadcastToRoom(roomname, ["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor]);
           break;
         }
 
@@ -264,14 +291,10 @@ serve((req) => {
           }
 
           resetSeat(roomSeats.get(room)!.get(seat)!);
-
           for (const client of clients) {
-            if (client.roomname === room && client.numkursi && client.numkursi.has(seat)) {
-              client.numkursi.delete(seat);
-            }
+            client.numkursi?.delete(seat);
           }
 
-         
           broadcastToRoom(room, ["removeKursi", room, seat]);
           broadcastRoomUserCount(room);
           break;
@@ -283,10 +306,6 @@ serve((req) => {
             ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
             break;
           }
-          if (!updateKursiBuffer.has(room)) {
-            updateKursiBuffer.set(room, new Map());
-          }
-          const seatMap = updateKursiBuffer.get(room)!;
 
           const seatInfo: SeatInfo = {
             noimageUrl,
@@ -299,7 +318,8 @@ serve((req) => {
             points: [],
           };
 
-          seatMap.set(seat, seatInfo);
+          updateKursiBuffer.set(room, updateKursiBuffer.get(room) ?? new Map());
+          updateKursiBuffer.get(room)!.set(seat, seatInfo);
           roomSeats.get(room)!.set(seat, seatInfo);
           break;
         }
@@ -327,10 +347,8 @@ serve((req) => {
   ws.onclose = () => {
     if (ws.roomname && ws.numkursi) {
       for (const s of ws.numkursi) {
-        const room = ws.roomname!;
-        resetSeat(roomSeats.get(room)!.get(s)!);
-       
-        broadcastToRoom(room, ["removeKursi", room, s]);
+        resetSeat(roomSeats.get(ws.roomname)!.get(s)!);
+        broadcastToRoom(ws.roomname, ["removeKursi", ws.roomname, s]);
       }
       broadcastRoomUserCount(ws.roomname);
     }
