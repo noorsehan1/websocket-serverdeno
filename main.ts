@@ -17,9 +17,31 @@ interface WebSocketWithRoom extends WebSocket {
   numkursi?: Set<number>;
 }
 
-type RoomName = "room1" | "room2" | "room3" | "room4" | "room5";
+type RoomName = 
+  "UnityRoom" | 
+  "HarmonyHub" | 
+  "TogetherSpace" | 
+  "OneWorldChat" | 
+  "GlobalCircle" | 
+  "ConnectNation" | 
+  "FusionLounge" | 
+  "PeaceTalks" | 
+  "BridgeRoom" | 
+  "CommonGround";
 
-const allRooms = new Set<RoomName>(["room1", "room2", "room3", "room4", "room5"]);
+const allRooms = new Set<RoomName>([
+  "UnityRoom",
+  "HarmonyHub",
+  "TogetherSpace",
+  "OneWorldChat",
+  "GlobalCircle",
+  "ConnectNation",
+  "FusionLounge",
+  "PeaceTalks",
+  "BridgeRoom",
+  "CommonGround"
+]);
+
 const MAX_SEATS = 35;
 const clients = new Set<WebSocketWithRoom>();
 
