@@ -137,10 +137,11 @@ serve((req) => {
 
       const evt = data[0];
       switch (evt) {
-        case "setIdTarget":
+        case "setIdTarget": {
           ws.idtarget = data[1];
           ws.send(JSON.stringify(["setIdTargetAck", ws.idtarget]));
           break;
+        }
 
         case "private": {
           const [_, idt, url, msg, sender] = data;
@@ -192,23 +193,23 @@ serve((req) => {
             break;
           }
 
-          // Jika client sebelumnya sudah ada di room lain, reset kursi lama
+          // Hapus kursi dan point lama jika ada di room sebelumnya
           if (ws.roomname && ws.numkursi) {
-            for (const s of ws.numkursi) {
-              const oldRoom = ws.roomname!;
-              resetSeat(roomSeats.get(oldRoom)!.get(s)!);
-              broadcastToRoom(oldRoom, ["removePoint", oldRoom, s]);
-              
+            const oldRoom = ws.roomname;
+            for (const seat of ws.numkursi) {
+              resetSeat(roomSeats.get(oldRoom)!.get(seat)!);
+              broadcastToRoom(oldRoom, ["removeKursi", oldRoom, seat]);
             }
-            broadcastRoomUserCount(ws.roomname);
+            broadcastRoomUserCount(oldRoom);
           }
 
+          // Set room baru dan kursi baru
           ws.roomname = newRoom;
           ws.numkursi = new Set([foundSeat]);
 
           ws.send(JSON.stringify(["numberKursiSaya", foundSeat]));
 
-          // Kirim semua point dan info kursi di room ke client baru
+          // Kirim semua point dan kursi yang ada di room baru ke client ini
           const allPoints: any[] = [];
           const meta: Record<number, Omit<SeatInfo, "points">> = {};
           for (const [seat, info] of seatMap) {
@@ -262,6 +263,7 @@ serve((req) => {
 
         case "removeKursiAndPoint": {
           const [_, room, seat] = data;
+
           if (!allRooms.has(room)) {
             ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
             break;
@@ -269,14 +271,14 @@ serve((req) => {
 
           resetSeat(roomSeats.get(room)!.get(seat)!);
 
+          // Hapus kursi dari semua client yang punya kursi ini
           for (const client of clients) {
-            if (client.roomname === room && client.numkursi && client.numkursi.has(seat)) {
+            if (client.roomname === room && client.numkursi?.has(seat)) {
               client.numkursi.delete(seat);
             }
           }
 
-          broadcastToRoom(room, ["removePoint", room, seat]);
-          
+          broadcastToRoom(room, ["removeKursi", room, seat]);
           broadcastRoomUserCount(room);
           break;
         }
@@ -309,7 +311,6 @@ serve((req) => {
         }
 
         case "resetRoom": {
-          // Reset semua kursi dan points di semua room
           for (const room of allRooms) {
             const seatMap = roomSeats.get(room)!;
             for (let i = 1; i <= MAX_SEATS; i++) {
@@ -331,13 +332,12 @@ serve((req) => {
 
   ws.onclose = () => {
     if (ws.roomname && ws.numkursi) {
-      for (const s of ws.numkursi) {
-        const room = ws.roomname!;
-        resetSeat(roomSeats.get(room)!.get(s)!);
-        broadcastToRoom(room, ["removePoint", room, s]);
-       
+      const room = ws.roomname;
+      for (const seat of ws.numkursi) {
+        resetSeat(roomSeats.get(room)!.get(seat)!);
+        broadcastToRoom(room, ["removeKursi", room, seat]);
       }
-      broadcastRoomUserCount(ws.roomname);
+      broadcastRoomUserCount(room);
     }
     clients.delete(ws);
   };
