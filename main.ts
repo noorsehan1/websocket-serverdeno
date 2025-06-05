@@ -337,8 +337,7 @@ serve((req) => {
           break;
         }
 
-        default:
-          ws.send(JSON.stringify(["error", "Unknown event type"]));
+       
       }
     } catch {
       ws.send(JSON.stringify(["error", "Failed to parse message"]));
