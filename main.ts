@@ -119,9 +119,10 @@ function broadcastNumber(num: number) {
 }
 
 setInterval(() => {
-  broadcastNumber(currentNumber);
   currentNumber = currentNumber < maxNumber ? currentNumber + 1 : 1;
+  broadcastNumber(currentNumber);
 }, intervalMillis);
+
 
 setInterval(() => {
   flushPointUpdates();
