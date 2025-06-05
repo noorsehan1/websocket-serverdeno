@@ -1,4 +1,4 @@
- import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
 interface SeatInfo {
   noimageUrl: string;
@@ -174,7 +174,7 @@ serve((req) => {
         case "joinRoom": {
           const newRoom: RoomName = data[1];
           if (!allRooms.has(newRoom)) {
-            ws.send(JSON.stringify(["error", Unknown room: ${newRoom}]));
+            ws.send(JSON.stringify(["error", `Unknown room: ${newRoom}`]));
             break;
           }
 
@@ -192,12 +192,11 @@ serve((req) => {
             break;
           }
 
-          // Jika client sebelumnya sudah ada di room lain, reset kursi lama
           if (ws.roomname && ws.numkursi) {
             for (const s of ws.numkursi) {
               const oldRoom = ws.roomname!;
               resetSeat(roomSeats.get(oldRoom)!.get(s)!);
-              broadcastToRoom(oldRoom, ["removePoint", oldRoom, s]);
+             
               broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
             }
             broadcastRoomUserCount(ws.roomname);
@@ -205,10 +204,8 @@ serve((req) => {
 
           ws.roomname = newRoom;
           ws.numkursi = new Set([foundSeat]);
-
           ws.send(JSON.stringify(["numberKursiSaya", foundSeat]));
 
-          // Kirim semua point dan info kursi di room ke client baru
           const allPoints: any[] = [];
           const meta: Record<number, Omit<SeatInfo, "points">> = {};
           for (const [seat, info] of seatMap) {
@@ -221,7 +218,6 @@ serve((req) => {
 
           ws.send(JSON.stringify(["allPointsList", newRoom, allPoints]));
           ws.send(JSON.stringify(["allUpdateKursiList", newRoom, meta]));
-
           broadcastRoomUserCount(newRoom);
           break;
         }
@@ -240,7 +236,7 @@ serve((req) => {
         case "updatePoint": {
           const [_, room, seat, x, y, fast] = data;
           if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", Unknown room: ${room}]));
+            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
             break;
           }
           const seatMap = roomSeats.get(room)!;
@@ -263,7 +259,7 @@ serve((req) => {
         case "removeKursiAndPoint": {
           const [_, room, seat] = data;
           if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", Unknown room: ${room}]));
+            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
             break;
           }
 
@@ -275,7 +271,7 @@ serve((req) => {
             }
           }
 
-          broadcastToRoom(room, ["removePoint", room, seat]);
+         
           broadcastToRoom(room, ["removeKursi", room, seat]);
           broadcastRoomUserCount(room);
           break;
@@ -284,7 +280,7 @@ serve((req) => {
         case "updateKursi": {
           const [_, room, seat, noimageUrl, namauser, color, itembawah, itematas, vip, viptanda] = data;
           if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", Unknown room: ${room}]));
+            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
             break;
           }
           if (!updateKursiBuffer.has(room)) {
@@ -309,7 +305,6 @@ serve((req) => {
         }
 
         case "resetRoom": {
-          // Reset semua kursi dan points di semua room
           for (const room of allRooms) {
             const seatMap = roomSeats.get(room)!;
             for (let i = 1; i <= MAX_SEATS; i++) {
@@ -334,7 +329,7 @@ serve((req) => {
       for (const s of ws.numkursi) {
         const room = ws.roomname!;
         resetSeat(roomSeats.get(room)!.get(s)!);
-        broadcastToRoom(room, ["removePoint", room, s]);
+       
         broadcastToRoom(room, ["removeKursi", room, s]);
       }
       broadcastRoomUserCount(ws.roomname);
