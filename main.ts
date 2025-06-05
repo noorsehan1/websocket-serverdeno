@@ -1,4 +1,4 @@
-import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
+ import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
 interface SeatInfo {
   noimageUrl: string;
@@ -174,7 +174,7 @@ serve((req) => {
         case "joinRoom": {
           const newRoom: RoomName = data[1];
           if (!allRooms.has(newRoom)) {
-            ws.send(JSON.stringify(["error", `Unknown room: ${newRoom}`]));
+            ws.send(JSON.stringify(["error", Unknown room: ${newRoom}]));
             break;
           }
 
@@ -240,7 +240,7 @@ serve((req) => {
         case "updatePoint": {
           const [_, room, seat, x, y, fast] = data;
           if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
+            ws.send(JSON.stringify(["error", Unknown room: ${room}]));
             break;
           }
           const seatMap = roomSeats.get(room)!;
@@ -263,7 +263,7 @@ serve((req) => {
         case "removeKursiAndPoint": {
           const [_, room, seat] = data;
           if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
+            ws.send(JSON.stringify(["error", Unknown room: ${room}]));
             break;
           }
 
@@ -284,7 +284,7 @@ serve((req) => {
         case "updateKursi": {
           const [_, room, seat, noimageUrl, namauser, color, itembawah, itematas, vip, viptanda] = data;
           if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
+            ws.send(JSON.stringify(["error", Unknown room: ${room}]));
             break;
           }
           if (!updateKursiBuffer.has(room)) {
