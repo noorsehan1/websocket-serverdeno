@@ -17,31 +17,9 @@ interface WebSocketWithRoom extends WebSocket {
   numkursi?: Set<number>;
 }
 
-type RoomName =
-  | "UnityRoom"
-  | "HarmonyHub"
-  | "TogetherSpace"
-  | "OneWorldChat"
-  | "GlobalCircle"
-  | "ConnectNation"
-  | "FusionLounge"
-  | "PeaceTalks"
-  | "BridgeRoom"
-  | "CommonGround";
+type RoomName = "room1" | "room2" | "room3" | "room4" | "room5";
 
-const allRooms = new Set<RoomName>([
-  "UnityRoom",
-  "HarmonyHub",
-  "TogetherSpace",
-  "OneWorldChat",
-  "GlobalCircle",
-  "ConnectNation",
-  "FusionLounge",
-  "PeaceTalks",
-  "BridgeRoom",
-  "CommonGround",
-]);
-
+const allRooms = new Set<RoomName>(["room1", "room2", "room3", "room4", "room5"]);
 const MAX_SEATS = 35;
 const clients = new Set<WebSocketWithRoom>();
 
@@ -67,17 +45,6 @@ function createEmptySeat(): SeatInfo {
   };
 }
 
-const FIFTEEN_MINUTES = 15 * 60 * 1000;
-let currentNumber = 1;
-
-setInterval(() => {
-  for (const room of allRooms) {
-    broadcastToRoom(room, ["bgnumber", currentNumber]);
-  }
-  currentNumber++;
-  if (currentNumber > 6) currentNumber = 1;
-}, FIFTEEN_MINUTES);
-
 function resetSeat(info: SeatInfo) {
   Object.assign(info, createEmptySeat());
 }
@@ -89,8 +56,7 @@ function broadcastToRoom(room: RoomName, msg: any[]) {
 }
 
 function getJumlahRoom(): Record<RoomName, number> {
-  const cnt: Record<RoomName, number> = {} as Record<RoomName, number>;
-  for (const room of allRooms) cnt[room] = 0;
+  const cnt = { room1: 0, room2: 0, room3: 0, room4: 0, room5: 0 };
   for (const c of clients) {
     if (c.roomname && c.numkursi) cnt[c.roomname] += c.numkursi.size;
   }
@@ -171,11 +137,10 @@ serve((req) => {
 
       const evt = data[0];
       switch (evt) {
-        case "setIdTarget": {
+        case "setIdTarget":
           ws.idtarget = data[1];
           ws.send(JSON.stringify(["setIdTargetAck", ws.idtarget]));
           break;
-        }
 
         case "private": {
           const [_, idt, url, msg, sender] = data;
@@ -227,13 +192,15 @@ serve((req) => {
             break;
           }
 
+          // Jika client sebelumnya sudah ada di room lain, reset kursi lama
           if (ws.roomname && ws.numkursi) {
-            const oldRoom = ws.roomname;
-            for (const seat of ws.numkursi) {
-              resetSeat(roomSeats.get(oldRoom)!.get(seat)!);
-              broadcastToRoom(oldRoom, ["removeKursi", oldRoom, seat]);
+            for (const s of ws.numkursi) {
+              const oldRoom = ws.roomname!;
+              resetSeat(roomSeats.get(oldRoom)!.get(s)!);
+              broadcastToRoom(oldRoom, ["removePoint", oldRoom, s]);
+              broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
             }
-            broadcastRoomUserCount(oldRoom);
+            broadcastRoomUserCount(ws.roomname);
           }
 
           ws.roomname = newRoom;
@@ -241,6 +208,7 @@ serve((req) => {
 
           ws.send(JSON.stringify(["numberKursiSaya", foundSeat]));
 
+          // Kirim semua point dan info kursi di room ke client baru
           const allPoints: any[] = [];
           const meta: Record<number, Omit<SeatInfo, "points">> = {};
           for (const [seat, info] of seatMap) {
@@ -269,22 +237,6 @@ serve((req) => {
           break;
         }
 
-        case "notif": {
-          const [_, idtarget, noimageUrl, deskripsi] = data;
-          const timestamp = Date.now();
-          let sent = false;
-          for (const c of clients) {
-            if (c.idtarget === idtarget) {
-              c.send(JSON.stringify(["notif", noimageUrl, deskripsi, timestamp]));
-              sent = true;
-            }
-          }
-          if (!sent) {
-            ws.send(JSON.stringify(["notifFailed", idtarget, "User not online"]));
-          }
-          break;
-        }
-
         case "updatePoint": {
           const [_, room, seat, x, y, fast] = data;
           if (!allRooms.has(room)) {
@@ -297,9 +249,13 @@ serve((req) => {
 
           seatInfo.points.push({ x, y, fast });
 
-          if (!pointUpdateBuffer.has(room)) pointUpdateBuffer.set(room, new Map());
+          if (!pointUpdateBuffer.has(room)) {
+            pointUpdateBuffer.set(room, new Map());
+          }
           const roomBuffer = pointUpdateBuffer.get(room)!;
-          if (!roomBuffer.has(seat)) roomBuffer.set(seat, []);
+          if (!roomBuffer.has(seat)) {
+            roomBuffer.set(seat, []);
+          }
           roomBuffer.get(seat)!.push({ x, y, fast });
           break;
         }
@@ -310,12 +266,16 @@ serve((req) => {
             ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
             break;
           }
+
           resetSeat(roomSeats.get(room)!.get(seat)!);
+
           for (const client of clients) {
-            if (client.roomname === room && client.numkursi?.has(seat)) {
+            if (client.roomname === room && client.numkursi && client.numkursi.has(seat)) {
               client.numkursi.delete(seat);
             }
           }
+
+          broadcastToRoom(room, ["removePoint", room, seat]);
           broadcastToRoom(room, ["removeKursi", room, seat]);
           broadcastRoomUserCount(room);
           break;
@@ -327,7 +287,9 @@ serve((req) => {
             ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
             break;
           }
-          if (!updateKursiBuffer.has(room)) updateKursiBuffer.set(room, new Map());
+          if (!updateKursiBuffer.has(room)) {
+            updateKursiBuffer.set(room, new Map());
+          }
           const seatMap = updateKursiBuffer.get(room)!;
 
           const seatInfo: SeatInfo = {
@@ -347,6 +309,7 @@ serve((req) => {
         }
 
         case "resetRoom": {
+          // Reset semua kursi dan points di semua room
           for (const room of allRooms) {
             const seatMap = roomSeats.get(room)!;
             for (let i = 1; i <= MAX_SEATS; i++) {
@@ -368,12 +331,13 @@ serve((req) => {
 
   ws.onclose = () => {
     if (ws.roomname && ws.numkursi) {
-      const room = ws.roomname;
-      for (const seat of ws.numkursi) {
-        resetSeat(roomSeats.get(room)!.get(seat)!);
-        broadcastToRoom(room, ["removeKursi", room, seat]);
+      for (const s of ws.numkursi) {
+        const room = ws.roomname!;
+        resetSeat(roomSeats.get(room)!.get(s)!);
+        broadcastToRoom(room, ["removePoint", room, s]);
+        broadcastToRoom(room, ["removeKursi", room, s]);
       }
-      broadcastRoomUserCount(room);
+      broadcastRoomUserCount(ws.roomname);
     }
     clients.delete(ws);
   };
