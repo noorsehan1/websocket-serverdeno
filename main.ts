@@ -106,7 +106,7 @@ function flushKursiUpdates() {
 // === Timer 2 menit currentNumber 1-6 ===
 let currentNumber = 1;
 const maxNumber = 6;
-const intervalMillis = 2 * 60 * 1000;
+const intervalMillis = 15 * 60 * 1000;
 
 function getCurrentNumber() {
   return currentNumber;
@@ -122,7 +122,6 @@ setInterval(() => {
   currentNumber = currentNumber < maxNumber ? currentNumber + 1 : 1;
   broadcastNumber(currentNumber);
 }, intervalMillis);
-
 
 setInterval(() => {
   flushPointUpdates();
@@ -158,6 +157,14 @@ serve((req) => {
           ws.idtarget = data[1];
           ws.send(JSON.stringify(["setIdTargetAck", ws.idtarget]));
           break;
+
+        case "ping": {
+          const pingId = data[1];
+          if (pingId && ws.idtarget === pingId) {
+            ws.send(JSON.stringify(["pong"]));
+          }
+          break;
+        }
 
         case "sendnotif": {
           const [_, idtarget, noimageUrl, username, deskripsi] = data;
@@ -336,8 +343,6 @@ serve((req) => {
           }
           break;
         }
-
-       
       }
     } catch {
       ws.send(JSON.stringify(["error", "Failed to parse message"]));
