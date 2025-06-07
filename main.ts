@@ -233,16 +233,25 @@ serve((req) => {
         }
 
         case "private": {
-          const [_, idt, url, msg, sender] = data;
-          const ts = Date.now();
-          const out = ["private", idt, url, msg, ts, sender];
+  const [_, idt, url, msg, sender] = data;
+  const ts = Date.now();
+  const out = ["private", idt, url, msg, ts, sender];
 
-          if (!privateMessageBuffer.has(idt)) {
-            privateMessageBuffer.set(idt, []);
-          }
-          privateMessageBuffer.get(idt)!.push(out);
-          break;
-        }
+  // Kirim ke pengirim langsung
+  try {
+    ws.send(JSON.stringify(out));
+  } catch {
+    // ignore
+  }
+
+  // Buffer untuk penerima
+  if (!privateMessageBuffer.has(idt)) {
+    privateMessageBuffer.set(idt, []);
+  }
+  privateMessageBuffer.get(idt)!.push(out);
+  break;
+}
+
 
         case "isUserOnline": {
           const target = data[1];
