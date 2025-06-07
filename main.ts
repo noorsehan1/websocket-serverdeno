@@ -24,6 +24,7 @@ interface WebSocketWithRoom extends WebSocket {
   numkursi?: Set<number>;
 }
 
+// Initialize seat maps
 const roomSeats: Map<RoomName, Map<number, SeatInfo>> = new Map();
 for (const room of allRooms) {
   const seatMap = new Map<number, SeatInfo>();
@@ -78,55 +79,98 @@ function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
 const pointUpdateBuffer: Map<RoomName, Map<number, Array<{ x: number; y: number; fast: boolean }>>> = new Map();
 const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
 
-function flushPointUpdates() {
-  for (const [room, seatMap] of pointUpdateBuffer) {
-    for (const [seat, points] of seatMap) {
-      for (const p of points) {
-        broadcastToRoom(room, ["pointUpdated", room, seat, p.x, p.y, p.fast]);
-      }
-      points.length = 0;
-    }
+// ================= Queue Initialization =================
+const updatePointQueue: Array<any[]> = [];
+const updateKursiQueue: Array<any[]> = [];
+const chatQueue: Array<any[]> = [];
+const removeKursiAndPointQueue: Array<any[]> = [];
+
+// ================= Processing Queues =================
+function processQueues() {
+  // Process updatePointQueue
+  while (updatePointQueue.length > 0) {
+    const data = updatePointQueue.shift()!;
+    handleUpdatePoint(data);
+  }
+  // Process updateKursiQueue
+  while (updateKursiQueue.length > 0) {
+    const data = updateKursiQueue.shift()!;
+    handleUpdateKursi(data);
+  }
+  // Process chatQueue
+  while (chatQueue.length > 0) {
+    const data = chatQueue.shift()!;
+    handleChat(data);
+  }
+  // Process removeKursiAndPointQueue
+  while (removeKursiAndPointQueue.length > 0) {
+    const data = removeKursiAndPointQueue.shift()!;
+    handleRemoveKursiAndPoint(data);
   }
 }
 
-function flushKursiUpdates() {
-  for (const [room, seatMap] of updateKursiBuffer) {
-    const updates: Array<[number, Omit<SeatInfo, "points">]> = [];
-    for (const [seat, info] of seatMap) {
-      const { points, ...rest } = info;
-      updates.push([seat, rest]);
-    }
-    if (updates.length > 0) {
-      broadcastToRoom(room, ["kursiBatchUpdate", room, updates]);
-      seatMap.clear();
-    }
+// ================= Handlers for Queue Events =================
+function handleUpdatePoint(data: any[]) {
+  const [_, room, seat, x, y, fast] = data;
+  if (!allRooms.has(room)) return;
+  const seatMap = roomSeats.get(room)!;
+  const seatInfo = seatMap.get(seat);
+  if (!seatInfo) return;
+
+  seatInfo.points.push({ x, y, fast });
+  if (!pointUpdateBuffer.has(room)) {
+    pointUpdateBuffer.set(room, new Map());
   }
-}
-
-// === Timer 2 menit currentNumber 1-6 ===
-let currentNumber = 1;
-const maxNumber = 6;
-const intervalMillis = 15 * 60 * 1000;
-
-function getCurrentNumber() {
-  return currentNumber;
-}
-
-function broadcastNumber(num: number) {
-  for (const c of clients) {
-    c.send(JSON.stringify(["currentNumber", num]));
+  const roomBuffer = pointUpdateBuffer.get(room)!;
+  if (!roomBuffer.has(seat)) {
+    roomBuffer.set(seat, []);
   }
+  roomBuffer.get(seat)!.push({ x, y, fast });
 }
 
+function handleUpdateKursi(data: any[]) {
+  const [_, room, seat, noimageUrl, namauser, color, itembawah, itematas, vip, viptanda] = data;
+  if (!allRooms.has(room)) return;
+
+  const seatInfo: SeatInfo = {
+    noimageUrl,
+    namauser,
+    color,
+    itembawah,
+    itematas,
+    vip: Boolean(vip),
+    viptanda,
+    points: [],
+  };
+
+  updateKursiBuffer.set(room, updateKursiBuffer.get(room) ?? new Map());
+  updateKursiBuffer.get(room)!.set(seat, seatInfo);
+  roomSeats.get(room)!.set(seat, seatInfo);
+}
+
+function handleChat(data: any[]) {
+  // data structure: ["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor]
+  const [_, roomname, noImageURL, username, message, usernameColor, chatTextColor] = data;
+  if (!roomname || !allRooms.has(roomname)) return;
+  broadcastToRoom(roomname, ["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor]);
+}
+
+function handleRemoveKursiAndPoint(data: any[]) {
+  const [_, room, seat] = data;
+  if (!allRooms.has(room)) return;
+
+  resetSeat(roomSeats.get(room)!.get(seat)!);
+  for (const client of clients) {
+    client.numkursi?.delete(seat);
+  }
+  broadcastToRoom(room, ["removeKursi", room, seat]);
+  broadcastRoomUserCount(room);
+}
+
+// ================= Main server =================
 setInterval(() => {
-  currentNumber = currentNumber < maxNumber ? currentNumber + 1 : 1;
-  broadcastNumber(currentNumber);
-}, intervalMillis);
-
-setInterval(() => {
-  flushPointUpdates();
-  flushKursiUpdates();
-}, 100);
+  processQueues();
+}, 100); // proses setiap 100ms
 
 serve((req) => {
   const upgrade = req.headers.get("upgrade") || "";
@@ -260,75 +304,26 @@ serve((req) => {
 
         case "chat": {
           const [_, roomname, noImageURL, username, message, usernameColor, chatTextColor] = data;
-          if (!roomname || !allRooms.has(roomname)) {
-            ws.send(JSON.stringify(["error", "Invalid room for chat"]));
-            break;
-          }
-          broadcastToRoom(roomname, ["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor]);
+          // Tambahkan ke queue
+          chatQueue.push(data);
           break;
         }
 
         case "updatePoint": {
-          const [_, room, seat, x, y, fast] = data;
-          if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
-            break;
-          }
-          const seatMap = roomSeats.get(room)!;
-          const seatInfo = seatMap.get(seat);
-          if (!seatInfo) break;
-
-          seatInfo.points.push({ x, y, fast });
-
-          if (!pointUpdateBuffer.has(room)) {
-            pointUpdateBuffer.set(room, new Map());
-          }
-          const roomBuffer = pointUpdateBuffer.get(room)!;
-          if (!roomBuffer.has(seat)) {
-            roomBuffer.set(seat, []);
-          }
-          roomBuffer.get(seat)!.push({ x, y, fast });
+          // Tambahkan ke queue
+          updatePointQueue.push(data);
           break;
         }
 
         case "removeKursiAndPoint": {
-          const [_, room, seat] = data;
-          if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
-            break;
-          }
-
-          resetSeat(roomSeats.get(room)!.get(seat)!);
-          for (const client of clients) {
-            client.numkursi?.delete(seat);
-          }
-
-          broadcastToRoom(room, ["removeKursi", room, seat]);
-          broadcastRoomUserCount(room);
+          // Tambahkan ke queue
+          removeKursiAndPointQueue.push(data);
           break;
         }
 
         case "updateKursi": {
-          const [_, room, seat, noimageUrl, namauser, color, itembawah, itematas, vip, viptanda] = data;
-          if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
-            break;
-          }
-
-          const seatInfo: SeatInfo = {
-            noimageUrl,
-            namauser,
-            color,
-            itembawah,
-            itematas,
-            vip: Boolean(vip),
-            viptanda,
-            points: [],
-          };
-
-          updateKursiBuffer.set(room, updateKursiBuffer.get(room) ?? new Map());
-          updateKursiBuffer.get(room)!.set(seat, seatInfo);
-          roomSeats.get(room)!.set(seat, seatInfo);
+          // Tambahkan ke queue
+          updateKursiQueue.push(data);
           break;
         }
 
@@ -362,3 +357,23 @@ serve((req) => {
 
   return response;
 });
+
+// Tambahkan fungsi getCurrentNumber
+let currentNumber = 1;
+const maxNumber = 6;
+const intervalMillis = 15 * 60 * 1000;
+
+function getCurrentNumber() {
+  return currentNumber;
+}
+
+function broadcastNumber(num: number) {
+  for (const c of clients) {
+    c.send(JSON.stringify(["currentNumber", num]));
+  }
+}
+
+setInterval(() => {
+  currentNumber = currentNumber < maxNumber ? currentNumber + 1 : 1;
+  broadcastNumber(currentNumber);
+}, intervalMillis);
