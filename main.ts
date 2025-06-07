@@ -52,7 +52,13 @@ function resetSeat(info: SeatInfo) {
 
 function broadcastToRoom(room: RoomName, msg: any[]) {
   for (const c of clients) {
-    if (c.roomname === room) c.send(JSON.stringify(msg));
+    if (c.roomname === room) {
+      try {
+        c.send(JSON.stringify(msg));
+      } catch {
+        // Optional: handle disconnected client
+      }
+    }
   }
 }
 
@@ -72,11 +78,50 @@ function broadcastRoomUserCount(room: RoomName) {
 function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
   const allCounts = getJumlahRoom();
   const result: Array<[RoomName, number]> = roomList.map(room => [room, allCounts[room]]);
-  ws.send(JSON.stringify(["allRoomsUserCount", result]));
+  try {
+    ws.send(JSON.stringify(["allRoomsUserCount", result]));
+  } catch {
+    // ignore
+  }
 }
 
 const pointUpdateBuffer: Map<RoomName, Map<number, Array<{ x: number; y: number; fast: boolean }>>> = new Map();
 const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
+
+// ** Tambahan chat message buffer per room **
+const chatMessageBuffer: Map<RoomName, Array<any>> = new Map();
+
+// Tambahkan ini di bagian deklarasi buffer bersama chatMessageBuffer dll:
+const privateMessageBuffer: Map<string, Array<any>> = new Map();
+
+// Tambahkan fungsi flush private message buffer:
+function flushPrivateMessageBuffer() {
+  for (const [idtarget, messages] of privateMessageBuffer) {
+    // Cari semua client dengan idtarget ini
+    for (const c of clients) {
+      if (c.idtarget === idtarget) {
+        for (const msg of messages) {
+          try {
+            c.send(JSON.stringify(msg));
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+    messages.length = 0; // kosongkan buffer
+  }
+}
+
+// ** Fungsi flush chat buffer yang baru ditambahkan **
+function flushChatBuffer() {
+  for (const [room, messages] of chatMessageBuffer) {
+    for (const msg of messages) {
+      broadcastToRoom(room, msg);
+    }
+    messages.length = 0;
+  }
+}
 
 function flushPointUpdates() {
   for (const [room, seatMap] of pointUpdateBuffer) {
@@ -106,7 +151,7 @@ function flushKursiUpdates() {
 // === Timer 2 menit currentNumber 1-6 ===
 let currentNumber = 1;
 const maxNumber = 6;
-const intervalMillis = 15 * 60 * 1000;
+const intervalMillis = 15 * 60 * 1000; // 15 menit (ubah jika perlu)
 
 function getCurrentNumber() {
   return currentNumber;
@@ -114,7 +159,11 @@ function getCurrentNumber() {
 
 function broadcastNumber(num: number) {
   for (const c of clients) {
-    c.send(JSON.stringify(["currentNumber", num]));
+    try {
+      c.send(JSON.stringify(["currentNumber", num]));
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -126,6 +175,8 @@ setInterval(() => {
 setInterval(() => {
   flushPointUpdates();
   flushKursiUpdates();
+  flushChatBuffer();  // flush chat messages juga
+  flushPrivateMessageBuffer(); // flush private messages
 }, 100);
 
 serve((req) => {
@@ -170,7 +221,13 @@ serve((req) => {
           const [_, idtarget, noimageUrl, username, deskripsi] = data;
           const notifData = ["notif", noimageUrl, username, deskripsi, Date.now()];
           for (const c of clients) {
-            if (c.idtarget === idtarget) c.send(JSON.stringify(notifData));
+            if (c.idtarget === idtarget) {
+              try {
+                c.send(JSON.stringify(notifData));
+              } catch {
+                // ignore
+              }
+            }
           }
           break;
         }
@@ -179,16 +236,11 @@ serve((req) => {
           const [_, idt, url, msg, sender] = data;
           const ts = Date.now();
           const out = ["private", idt, url, msg, ts, sender];
-          let sent = false;
-          for (const c of clients) {
-            if (c.idtarget === idt) {
-              c.send(JSON.stringify(out));
-              sent = true;
-            }
+
+          if (!privateMessageBuffer.has(idt)) {
+            privateMessageBuffer.set(idt, []);
           }
-          if (!sent && ws.idtarget) {
-            ws.send(JSON.stringify(["privateFailed", idt, "User not online"]));
-          }
+          privateMessageBuffer.get(idt)!.push(out);
           break;
         }
 
@@ -264,7 +316,12 @@ serve((req) => {
             ws.send(JSON.stringify(["error", "Invalid room for chat"]));
             break;
           }
-          broadcastToRoom(roomname, ["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor]);
+
+          // ** Push chat ke buffer, jangan langsung broadcast **
+          if (!chatMessageBuffer.has(roomname)) {
+            chatMessageBuffer.set(roomname, []);
+          }
+          chatMessageBuffer.get(roomname)!.push(["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor]);
           break;
         }
 
@@ -326,7 +383,9 @@ serve((req) => {
             points: [],
           };
 
-          updateKursiBuffer.set(room, updateKursiBuffer.get(room) ?? new Map());
+          if (!updateKursiBuffer.has(room)) {
+            updateKursiBuffer.set(room, new Map());
+          }
           updateKursiBuffer.get(room)!.set(seat, seatInfo);
           roomSeats.get(room)!.set(seat, seatInfo);
           break;
@@ -345,7 +404,11 @@ serve((req) => {
         }
       }
     } catch {
-      ws.send(JSON.stringify(["error", "Failed to parse message"]));
+      try {
+        ws.send(JSON.stringify(["error", "Failed to parse message"]));
+      } catch {
+        // ignore
+      }
     }
   };
 
