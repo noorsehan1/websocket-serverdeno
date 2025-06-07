@@ -52,13 +52,7 @@ function resetSeat(info: SeatInfo) {
 
 function broadcastToRoom(room: RoomName, msg: any[]) {
   for (const c of clients) {
-    if (c.roomname === room) {
-      try {
-        c.send(JSON.stringify(msg));
-      } catch {
-        // Optional: handle disconnected client
-      }
-    }
+    if (c.roomname === room) c.send(JSON.stringify(msg));
   }
 }
 
@@ -78,50 +72,11 @@ function broadcastRoomUserCount(room: RoomName) {
 function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
   const allCounts = getJumlahRoom();
   const result: Array<[RoomName, number]> = roomList.map(room => [room, allCounts[room]]);
-  try {
-    ws.send(JSON.stringify(["allRoomsUserCount", result]));
-  } catch {
-    // ignore
-  }
+  ws.send(JSON.stringify(["allRoomsUserCount", result]));
 }
 
 const pointUpdateBuffer: Map<RoomName, Map<number, Array<{ x: number; y: number; fast: boolean }>>> = new Map();
 const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
-
-// ** Tambahan chat message buffer per room **
-const chatMessageBuffer: Map<RoomName, Array<any>> = new Map();
-
-// Tambahkan ini di bagian deklarasi buffer bersama chatMessageBuffer dll:
-const privateMessageBuffer: Map<string, Array<any>> = new Map();
-
-// Tambahkan fungsi flush private message buffer:
-function flushPrivateMessageBuffer() {
-  for (const [idtarget, messages] of privateMessageBuffer) {
-    // Cari semua client dengan idtarget ini
-    for (const c of clients) {
-      if (c.idtarget === idtarget) {
-        for (const msg of messages) {
-          try {
-            c.send(JSON.stringify(msg));
-          } catch {
-            // ignore
-          }
-        }
-      }
-    }
-    messages.length = 0; // kosongkan buffer
-  }
-}
-
-// ** Fungsi flush chat buffer yang baru ditambahkan **
-function flushChatBuffer() {
-  for (const [room, messages] of chatMessageBuffer) {
-    for (const msg of messages) {
-      broadcastToRoom(room, msg);
-    }
-    messages.length = 0;
-  }
-}
 
 function flushPointUpdates() {
   for (const [room, seatMap] of pointUpdateBuffer) {
@@ -151,7 +106,7 @@ function flushKursiUpdates() {
 // === Timer 2 menit currentNumber 1-6 ===
 let currentNumber = 1;
 const maxNumber = 6;
-const intervalMillis = 15 * 60 * 1000; // 15 menit (ubah jika perlu)
+const intervalMillis = 15 * 60 * 1000;
 
 function getCurrentNumber() {
   return currentNumber;
@@ -159,11 +114,7 @@ function getCurrentNumber() {
 
 function broadcastNumber(num: number) {
   for (const c of clients) {
-    try {
-      c.send(JSON.stringify(["currentNumber", num]));
-    } catch {
-      // ignore
-    }
+    c.send(JSON.stringify(["currentNumber", num]));
   }
 }
 
@@ -175,8 +126,6 @@ setInterval(() => {
 setInterval(() => {
   flushPointUpdates();
   flushKursiUpdates();
-  flushChatBuffer();  // flush chat messages juga
-  flushPrivateMessageBuffer(); // flush private messages
 }, 100);
 
 serve((req) => {
@@ -221,13 +170,7 @@ serve((req) => {
           const [_, idtarget, noimageUrl, username, deskripsi] = data;
           const notifData = ["notif", noimageUrl, username, deskripsi, Date.now()];
           for (const c of clients) {
-            if (c.idtarget === idtarget) {
-              try {
-                c.send(JSON.stringify(notifData));
-              } catch {
-                // ignore
-              }
-            }
+            if (c.idtarget === idtarget) c.send(JSON.stringify(notifData));
           }
           break;
         }
@@ -236,11 +179,16 @@ serve((req) => {
           const [_, idt, url, msg, sender] = data;
           const ts = Date.now();
           const out = ["private", idt, url, msg, ts, sender];
-
-          if (!privateMessageBuffer.has(idt)) {
-            privateMessageBuffer.set(idt, []);
+          let sent = false;
+          for (const c of clients) {
+            if (c.idtarget === idt) {
+              c.send(JSON.stringify(out));
+              sent = true;
+            }
           }
-          privateMessageBuffer.get(idt)!.push(out);
+          if (!sent && ws.idtarget) {
+            ws.send(JSON.stringify(["privateFailed", idt, "User not online"]));
+          }
           break;
         }
 
@@ -263,7 +211,7 @@ serve((req) => {
         case "joinRoom": {
           const newRoom: RoomName = data[1];
           if (!allRooms.has(newRoom)) {
-            ws.send(JSON.stringify(["error", `Unknown room: ${newRoom}`]));
+            ws.send(JSON.stringify(["error", Unknown room: ${newRoom}]));
             break;
           }
 
@@ -316,19 +264,14 @@ serve((req) => {
             ws.send(JSON.stringify(["error", "Invalid room for chat"]));
             break;
           }
-
-          // ** Push chat ke buffer, jangan langsung broadcast **
-          if (!chatMessageBuffer.has(roomname)) {
-            chatMessageBuffer.set(roomname, []);
-          }
-          chatMessageBuffer.get(roomname)!.push(["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor]);
+          broadcastToRoom(roomname, ["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor]);
           break;
         }
 
         case "updatePoint": {
           const [_, room, seat, x, y, fast] = data;
           if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
+            ws.send(JSON.stringify(["error", Unknown room: ${room}]));
             break;
           }
           const seatMap = roomSeats.get(room)!;
@@ -351,7 +294,7 @@ serve((req) => {
         case "removeKursiAndPoint": {
           const [_, room, seat] = data;
           if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
+            ws.send(JSON.stringify(["error", Unknown room: ${room}]));
             break;
           }
 
@@ -368,7 +311,7 @@ serve((req) => {
         case "updateKursi": {
           const [_, room, seat, noimageUrl, namauser, color, itembawah, itematas, vip, viptanda] = data;
           if (!allRooms.has(room)) {
-            ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
+            ws.send(JSON.stringify(["error", Unknown room: ${room}]));
             break;
           }
 
@@ -383,9 +326,7 @@ serve((req) => {
             points: [],
           };
 
-          if (!updateKursiBuffer.has(room)) {
-            updateKursiBuffer.set(room, new Map());
-          }
+          updateKursiBuffer.set(room, updateKursiBuffer.get(room) ?? new Map());
           updateKursiBuffer.get(room)!.set(seat, seatInfo);
           roomSeats.get(room)!.set(seat, seatInfo);
           break;
@@ -404,11 +345,7 @@ serve((req) => {
         }
       }
     } catch {
-      try {
-        ws.send(JSON.stringify(["error", "Failed to parse message"]));
-      } catch {
-        // ignore
-      }
+      ws.send(JSON.stringify(["error", "Failed to parse message"]));
     }
   };
 
