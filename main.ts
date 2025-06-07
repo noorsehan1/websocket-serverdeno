@@ -1,6 +1,5 @@
 import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
-// Daftar room
 const roomList = ["room1", "room2", "room3", "room4", "room5"] as const;
 type RoomName = typeof roomList[number];
 
@@ -25,7 +24,6 @@ interface WebSocketWithRoom extends WebSocket {
   numkursi?: Set<number>;
 }
 
-// Initialize seat maps per room
 const roomSeats: Map<RoomName, Map<number, SeatInfo>> = new Map();
 for (const room of allRooms) {
   const seatMap = new Map<number, SeatInfo>();
@@ -77,15 +75,9 @@ function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
   ws.send(JSON.stringify(["allRoomsUserCount", result]));
 }
 
-// Buffer untuk update points dan kursi
 const pointUpdateBuffer: Map<RoomName, Map<number, Array<{ x: number; y: number; fast: boolean }>>> = new Map();
 const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
 
-// Queue tambahan untuk update kursi dan chat
-const kursiUpdateQueue: Array<{ room: RoomName; seat: number; info: SeatInfo }> = [];
-const chatMessageQueue: Array<{ room: RoomName; message: any[] }> = [];
-
-// Function flush point updates
 function flushPointUpdates() {
   for (const [room, seatMap] of pointUpdateBuffer) {
     for (const [seat, points] of seatMap) {
@@ -97,7 +89,6 @@ function flushPointUpdates() {
   }
 }
 
-// Function flush kursi updates
 function flushKursiUpdates() {
   for (const [room, seatMap] of updateKursiBuffer) {
     const updates: Array<[number, Omit<SeatInfo, "points">]> = [];
@@ -112,7 +103,7 @@ function flushKursiUpdates() {
   }
 }
 
-// Timer 15 menit untuk update nomor
+// === Timer 2 menit currentNumber 1-6 ===
 let currentNumber = 1;
 const maxNumber = 6;
 const intervalMillis = 15 * 60 * 1000;
@@ -132,32 +123,11 @@ setInterval(() => {
   broadcastNumber(currentNumber);
 }, intervalMillis);
 
-// Timer 100 ms untuk proses queue
 setInterval(() => {
-  // Proses update kursi dari queue
-  for (const { room, seat, info } of kursiUpdateQueue) {
-    // Update map utama
-    roomSeats.get(room)!.set(seat, info);
-    // Update buffer broadcast
-    if (!updateKursiBuffer.has(room)) {
-      updateKursiBuffer.set(room, new Map());
-    }
-    updateKursiBuffer.get(room)!.set(seat, info);
-  }
-  kursiUpdateQueue.length = 0;
-
-  // Proses chat dari queue
-  for (const { room, message } of chatMessageQueue) {
-    broadcastToRoom(room, message);
-  }
-  chatMessageQueue.length = 0;
-
-  // Flush buffer lainnya
   flushPointUpdates();
   flushKursiUpdates();
 }, 100);
 
-// Server WebSocket
 serve((req) => {
   const upgrade = req.headers.get("upgrade") || "";
   if (upgrade.toLowerCase() !== "websocket") {
@@ -294,8 +264,7 @@ serve((req) => {
             ws.send(JSON.stringify(["error", "Invalid room for chat"]));
             break;
           }
-          // Enqueue chat message
-          chatMessageQueue.push({ room: roomname, message: data });
+          broadcastToRoom(roomname, ["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor]);
           break;
         }
 
@@ -357,8 +326,9 @@ serve((req) => {
             points: [],
           };
 
-          // Enqueue update kursi
-          kursiUpdateQueue.push({ room, seat, info: seatInfo });
+          updateKursiBuffer.set(room, updateKursiBuffer.get(room) ?? new Map());
+          updateKursiBuffer.get(room)!.set(seat, seatInfo);
+          roomSeats.get(room)!.set(seat, seatInfo);
           break;
         }
 
