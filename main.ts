@@ -387,7 +387,7 @@ serve((req) => {
             color,
             itembawah,
             itematas,
-            vip: Boolean(vip),
+            vip,
             viptanda,
             points: [],
           };
