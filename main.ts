@@ -1,6 +1,18 @@
 import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
-const roomList = ["room1", "room2", "room3", "room4", "room5"] as const;
+const roomList = [
+  "Chill Zone",
+  "Coffee & Chat",
+  "Casual Vibes",
+  "Lounge Talk",
+  "Easy Talk",
+  "Friendly Corner",
+  "The Hangout",
+  "Relax & Chat",
+  "Just Chillin'",
+  "The Chatter Room"
+] as const;
+
 type RoomName = typeof roomList[number];
 
 const allRooms = new Set<RoomName>(roomList);
