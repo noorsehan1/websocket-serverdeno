@@ -187,7 +187,7 @@ async function sendHeartbeatAsync(batchSize = 100, delayMs = 5) {
 
 setInterval(() => {
   sendHeartbeatAsync(); // gunakan async batch
-}, 20000);
+}, 60000);
 
 
 
