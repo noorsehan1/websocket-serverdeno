@@ -160,6 +160,36 @@ function flushKursiUpdates() {
   }
 }
 
+
+async function sendHeartbeatAsync(batchSize = 100, delayMs = 5) {
+  const clientArray = Array.from(clients);
+
+  for (let i = 0; i < clientArray.length; i += batchSize) {
+    const batch = clientArray.slice(i, i + batchSize);
+    for (const c of batch) {
+      try {
+        const w = c as WebSocketWithRoom;
+        if (w.isAlive === false) {
+          clients.delete(w);
+          try { w.close(); } catch {}
+          continue;
+        }
+        w.isAlive = false;
+        w.send(JSON.stringify(["cek"]));
+      } catch {
+        clients.delete(c);
+      }
+    }
+    await new Promise((res) => setTimeout(res, delayMs)); // beri waktu napas ke event loop
+  }
+}
+
+setInterval(() => {
+  sendHeartbeatAsync(); // gunakan async batch
+}, 20000);
+
+
+
 // === Timer 2 menit currentNumber 1-6 ===
 let currentNumber = 1;
 const maxNumber = 6;
@@ -228,6 +258,14 @@ serve((req) => {
           }
           break;
         }
+
+    case "pong": {
+  // Balasan dari client, tidak perlu disimpan
+  break;
+}
+
+
+
 
         case "sendnotif": {
           const [_, idtarget, noimageUrl, username, deskripsi] = data;
