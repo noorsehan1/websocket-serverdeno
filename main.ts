@@ -34,6 +34,7 @@ interface WebSocketWithRoom extends WebSocket {
   roomname?: RoomName;
   idtarget?: string;
   numkursi?: Set<number>;
+  isAlive?: boolean; // <-- tambahkan ini
 }
 
 const roomSeats: Map<RoomName, Map<number, SeatInfo>> = new Map();
@@ -260,9 +261,11 @@ serve((req) => {
         }
 
     case "pong": {
-  // Balasan dari client, tidak perlu disimpan
+  // Ini penting: tandai client hidup lagi!
+  (ws as WebSocketWithRoom).isAlive = true;
   break;
 }
+
 
 
 
