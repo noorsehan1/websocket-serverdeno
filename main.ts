@@ -178,7 +178,7 @@ async function sendHeartbeatAsync(batchSize = 100, delayMs = 5) {
         w.isAlive = false;
         w.send(JSON.stringify(["cek"]));
       } catch {
-        clients.delete(c);
+       
       }
     }
     await new Promise((res) => setTimeout(res, delayMs)); // beri waktu napas ke event loop
