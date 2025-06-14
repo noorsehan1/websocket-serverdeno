@@ -9,7 +9,7 @@ const roomList = [
   "Friendly Corner",
   "The Hangout",
   "Relax & Chat",
-  "Just Chillin'",
+  "Just Chillin",
   "The Chatter Room"
 ] as const;
 
@@ -34,7 +34,6 @@ interface WebSocketWithRoom extends WebSocket {
   roomname?: RoomName;
   idtarget?: string;
   numkursi?: Set<number>;
-  isAlive?: boolean;
 }
 
 const roomSeats: Map<RoomName, Map<number, SeatInfo>> = new Map();
@@ -68,9 +67,7 @@ function broadcastToRoom(room: RoomName, msg: any[]) {
     if (c.roomname === room) {
       try {
         c.send(JSON.stringify(msg));
-      } catch {
-        // Optional: handle disconnected client
-      }
+      } catch {}
     }
   }
 }
@@ -93,9 +90,7 @@ function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
   const result: Array<[RoomName, number]> = roomList.map(room => [room, allCounts[room]]);
   try {
     ws.send(JSON.stringify(["allRoomsUserCount", result]));
-  } catch {
-    // ignore
-  }
+  } catch {}
 }
 
 const pointUpdateBuffer: Map<RoomName, Map<number, Array<{ x: number; y: number; fast: boolean }>>> = new Map();
@@ -110,9 +105,7 @@ function flushPrivateMessageBuffer() {
         for (const msg of messages) {
           try {
             c.send(JSON.stringify(msg));
-          } catch {
-            // ignore
-          }
+          } catch {}
         }
       }
     }
@@ -154,32 +147,6 @@ function flushKursiUpdates() {
   }
 }
 
-async function sendHeartbeatAsync(batchSize = 100, delayMs = 5) {
-  const clientArray = Array.from(clients);
-  for (let i = 0; i < clientArray.length; i += batchSize) {
-    const batch = clientArray.slice(i, i + batchSize);
-    for (const c of batch) {
-      try {
-        const w = c as WebSocketWithRoom;
-        if (w.isAlive === false) {
-          clients.delete(w);
-          try { w.close(); } catch {}
-          continue;
-        }
-        w.isAlive = false;
-        w.send(JSON.stringify(["cek"]));
-      } catch {
-        // ignore
-      }
-    }
-    await new Promise((res) => setTimeout(res, delayMs));
-  }
-}
-
-setInterval(() => {
-  sendHeartbeatAsync();
-}, 60000);
-
 let currentNumber = 1;
 const maxNumber = 6;
 const intervalMillis = 15 * 60 * 1000;
@@ -192,9 +159,7 @@ function broadcastNumber(num: number) {
   for (const c of clients) {
     try {
       c.send(JSON.stringify(["currentNumber", num]));
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
 }
 
@@ -253,11 +218,6 @@ serve((req) => {
             break;
           }
 
-          case "pong": {
-            (ws as WebSocketWithRoom).isAlive = true;
-            break;
-          }
-
           case "sendnotif": {
             const [_, idtarget, noimageUrl, username, deskripsi] = data;
             const notifData = ["notif", noimageUrl, username, deskripsi, Date.now()];
@@ -265,9 +225,7 @@ serve((req) => {
               if (c.idtarget === idtarget) {
                 try {
                   c.send(JSON.stringify(notifData));
-                } catch {
-                  // ignore
-                }
+                } catch {}
               }
             }
             break;
@@ -277,13 +235,9 @@ serve((req) => {
             const [_, idt, url, msg, sender] = data;
             const ts = Date.now();
             const out = ["private", idt, url, msg, ts, sender];
-
             try {
               ws.send(JSON.stringify(out));
-            } catch {
-              // ignore
-            }
-
+            } catch {}
             if (!privateMessageBuffer.has(idt)) {
               privateMessageBuffer.set(idt, []);
             }
@@ -452,9 +406,7 @@ serve((req) => {
       } catch (err) {
         try {
           ws.send(JSON.stringify(["error", "Failed to process message"]));
-        } catch {
-          // ignore
-        }
+        } catch {}
         console.error("Error handling message:", err);
       }
     };
