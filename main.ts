@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
 const roomList = [
   "Chill Zone",
-  "Coffee & Chat",
+  "Catch Up",
   "Casual Vibes",
   "Lounge Talk",
   "Easy Talk",
