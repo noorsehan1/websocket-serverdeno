@@ -261,26 +261,24 @@ serve((req) => {
             ws.send(JSON.stringify(["currentNumber", getCurrentNumber()]));
             break;
 
-          case "rejoinCountOnly": {
+ case "rejoinCountOnly": {
   const room: RoomName = data[1];
   if (!allRooms.has(room)) break;
 
-  const isAlreadyCounted = ws.roomname === room && ws.numkursi && ws.numkursi.size > 0;
-
   ws.roomname = room;
 
+  // Pastikan ws.numkursi tetap terdefinisi (meskipun kosong)
   if (!ws.numkursi) {
-    ws.numkursi = new Set<number>(); // supaya tetap bisa dihitung
+    ws.numkursi = new Set<number>();
   }
 
-  // Hanya kirim ulang count jika belum dihitung sebelumnya
-  if (!isAlreadyCounted) {
-    broadcastRoomUserCount(room);
-  }
+  // Selalu kirim ulang jumlah user di room, walaupun numkursi kosong
+  broadcastRoomUserCount(room);
 
   console.log(`Client ${ws.idtarget || "[unknown]"} rejoined room: ${room}`);
   break;
 }
+
 
 
 
