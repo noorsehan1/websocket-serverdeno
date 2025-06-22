@@ -261,25 +261,6 @@ serve((req) => {
             ws.send(JSON.stringify(["currentNumber", getCurrentNumber()]));
             break;
 
-case "rejoinCountOnly": {
-  const room: RoomName = data[1];
-  if (!allRooms.has(room)) break;
-
-  ws.roomname = room;
-
-  if (!ws.numkursi) {
-    ws.numkursi = new Set<number>();
-  }
-
-  // Delay broadcast selama 1 detik
-  setTimeout(() => {
-    broadcastRoomUserCount(room);
-  }, 1500);
-
-  console.log(`Client ${ws.idtarget || "[unknown]"} rejoined room: ${room}`);
-  break;
-}
-
 
 
 
