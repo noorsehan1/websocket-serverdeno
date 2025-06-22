@@ -265,14 +265,20 @@ serve((req) => {
   const room: RoomName = data[1];
   if (!allRooms.has(room)) break;
 
+  const isAlreadyCounted = ws.roomname === room && ws.numkursi && ws.numkursi.size > 0;
+
   ws.roomname = room;
 
-  // Jika belum punya kursi, masukkan kursi lama (hanya logika dummy agar bisa dihitung)
-  if (!ws.numkursi || ws.numkursi.size === 0) {
-    ws.numkursi = new Set<number>(); // kosong tapi tetap dihitung
+  if (!ws.numkursi) {
+    ws.numkursi = new Set<number>(); // supaya tetap bisa dihitung
   }
 
-  broadcastRoomUserCount(room);
+  // Hanya kirim ulang count jika belum dihitung sebelumnya
+  if (!isAlreadyCounted) {
+    broadcastRoomUserCount(room);
+  }
+
+  console.log(`Client ${ws.idtarget || "[unknown]"} rejoined room: ${room}`);
   break;
 }
 
