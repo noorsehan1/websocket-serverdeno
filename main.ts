@@ -27,7 +27,7 @@ interface SeatInfo {
   itematas: number;
   vip: boolean;
   viptanda: number;
-  points: Array<{ x: number; y: number; fast: boolean }>;
+  points: Array<{ x: number; y: number; fast: number}>;
 }
 
 interface WebSocketWithRoom extends WebSocket {
