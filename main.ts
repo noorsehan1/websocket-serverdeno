@@ -271,7 +271,7 @@ serve((req) => {
 
           
 
-          case "joinRoom": {
+         case "joinRoom": {
   const newRoom: RoomName = data[1];
   if (!allRooms.has(newRoom)) {
     ws.send(JSON.stringify(["error", `Unknown room: ${newRoom}`]));
@@ -281,7 +281,7 @@ serve((req) => {
   const seatMap = roomSeats.get(newRoom)!;
   let foundSeat: number | null = null;
 
-  // ✅ Cek apakah user sudah punya seat sebelumnya
+  // ✅ Cek apakah user sudah punya kursi di room itu sebelumnya
   if (ws.idtarget && userToSeat.has(ws.idtarget)) {
     const prev = userToSeat.get(ws.idtarget)!;
     if (prev.room === newRoom) {
@@ -292,22 +292,33 @@ serve((req) => {
     }
   }
 
-  // ✅ Cari seat baru kalau belum ada
-  if (foundSeat === null) {
+  // ✅ Cari kursi kosong dan lock secara aman
+  if (foundSeat === null && ws.idtarget) {
     for (let i = 1; i <= MAX_SEATS; i++) {
-      if (seatMap.get(i)!.namauser === "") {
+      const kursi = seatMap.get(i)!;
+      if (kursi.namauser === "") {
+        // Lock kursi sementara
+        kursi.namauser = "__LOCK__" + ws.idtarget;
         foundSeat = i;
         break;
       }
     }
   }
 
+  // ❌ Kalau tetap tidak dapat kursi
   if (foundSeat === null) {
     ws.send(JSON.stringify(["roomFull", newRoom]));
     break;
   }
 
-  // ✅ Bersihkan kursi sebelumnya kalau pindah room
+  // ✅ Pastikan lock masih berlaku (belum diambil orang lain dalam 1ms terakhir)
+  const kursiFinal = seatMap.get(foundSeat)!;
+  if (!kursiFinal.namauser.startsWith("__LOCK__")) {
+    ws.send(JSON.stringify(["roomFull", newRoom]));
+    break;
+  }
+
+  // ✅ Bersihkan kursi lama
   if (ws.roomname && ws.numkursi) {
     for (const s of ws.numkursi) {
       const oldRoom = ws.roomname!;
@@ -321,17 +332,17 @@ serve((req) => {
   ws.numkursi = new Set([foundSeat]);
   ws.send(JSON.stringify(["numberKursiSaya", foundSeat]));
 
-  // ✅ Simpan ke mapping user → kursi
+  // ✅ Simpan user ↔ kursi
   if (ws.idtarget) {
     userToSeat.set(ws.idtarget, { room: newRoom, seat: foundSeat });
   }
 
-  // Kirim data kursi dan poin
+  // ✅ Kirim kursi dan poin
   const allPoints: any[] = [];
   const meta: Record<number, Omit<SeatInfo, "points">> = {};
   for (const [seat, info] of seatMap) {
     for (const p of info.points) allPoints.push({ seat, ...p });
-    if (info.namauser) {
+    if (info.namauser && !info.namauser.startsWith("__LOCK__")) {
       const { points, ...rest } = info;
       meta[seat] = rest;
     }
@@ -339,6 +350,7 @@ serve((req) => {
 
   ws.send(JSON.stringify(["allPointsList", newRoom, allPoints]));
   ws.send(JSON.stringify(["allUpdateKursiList", newRoom, meta]));
+
   broadcastRoomUserCount(newRoom);
   break;
 }
