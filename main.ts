@@ -93,7 +93,7 @@ function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
   } catch {}
 }
 
-const pointUpdateBuffer: Map<RoomName, Map<number, Array<{ x: number; y: number; fast: boolean }>>> = new Map();
+const pointUpdateBuffer: Map<RoomName, Map<number, Array<{ x: number; y: number; fast: number }>>> = new Map();
 const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
 const chatMessageBuffer: Map<RoomName, Array<any>> = new Map();
 const privateMessageBuffer: Map<string, Array<any>> = new Map();
