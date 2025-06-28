@@ -432,51 +432,35 @@ kursi.lockTime = Date.now(); // ⬅️ Lock timestamp
             break;
           }
 
-          case "updateKursi": {
-            const [_, room, seat, noimageUrl, namauser, color, itembawah, itematas, vip, viptanda] = data;
-            if (!allRooms.has(room)) {
-              ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
-              break;
-            }
+         case "updateKursi": {
+  const [_, room, seat, noimageUrl, namauser, color, itembawah, itematas, vip, viptanda] = data;
+  if (!allRooms.has(room)) {
+    ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
+    break;
+  }
 
-            const seatInfo: SeatInfo = {
-              noimageUrl,
-              namauser,
-              color,
-              itembawah,
-              itematas,
-              vip,
-              viptanda,
-              points: [],
-            };
+  const seatInfo: SeatInfo = {
+    noimageUrl,
+    namauser,
+    color,
+    itembawah,
+    itematas,
+    vip,
+    viptanda,
+    points: [],
+  };
 
-            if (!updateKursiBuffer.has(room)) {
-              updateKursiBuffer.set(room, new Map());
-            }
-            updateKursiBuffer.get(room)!.set(seat, seatInfo);
-            roomSeats.get(room)!.set(seat, seatInfo);
-            break;
-          }
+  if (!updateKursiBuffer.has(room)) {
+    updateKursiBuffer.set(room, new Map());
+  }
+  updateKursiBuffer.get(room)!.set(seat, seatInfo);
+  roomSeats.get(room)!.set(seat, seatInfo);
 
-          case "resetRoom": {
-            for (const room of allRooms) {
-              const seatMap = roomSeats.get(room)!;
-              for (let i = 1; i <= MAX_SEATS; i++) {
-                resetSeat(seatMap.get(i)!);
-              }
-              broadcastToRoom(room, ["resetRoom", room]);
-              broadcastRoomUserCount(room);
-            }
-            break;
-          }
-        }
-      } catch (err) {
-        try {
-          ws.send(JSON.stringify(["error", "Failed to process message"]));
-        } catch {}
-        console.error("Error handling message:", err);
-      }
-    };
+  // ⬅️ Tambahkan ini supaya client dapat update jumlah user
+  broadcastRoomUserCount(room);
+
+  break;
+}
 
 
 
