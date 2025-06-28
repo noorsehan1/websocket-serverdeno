@@ -28,7 +28,7 @@ interface SeatInfo {
   vip: boolean;
   viptanda: number;
   points: Array<{ x: number; y: number; fast: number }>;
-  lockTime?: number; // ⬅️ Tambahkan ini
+  lockTime?: number;
 }
 
 interface WebSocketWithRoom extends WebSocket {
@@ -37,9 +37,7 @@ interface WebSocketWithRoom extends WebSocket {
   numkursi?: Set<number>;
 }
 
-
-const userToSeat: Map<string, { room: RoomName, seat: number }> = new Map();
-
+const userToSeat: Map<string, { room: RoomName; seat: number }> = new Map();
 
 const roomSeats: Map<RoomName, Map<number, SeatInfo>> = new Map();
 for (const room of allRooms) {
@@ -89,7 +87,6 @@ function getJumlahRoom(): Record<RoomName, number> {
   }
   return cnt;
 }
-
 
 function broadcastRoomUserCount(room: RoomName) {
   const count = getJumlahRoom()[room] || 0;
@@ -189,7 +186,6 @@ function cleanExpiredLocks() {
   }
 }
 
-
 setInterval(() => {
   currentNumber = currentNumber < maxNumber ? currentNumber + 1 : 1;
   broadcastNumber(currentNumber);
@@ -201,12 +197,11 @@ setInterval(() => {
     flushKursiUpdates();
     flushChatBuffer();
     flushPrivateMessageBuffer();
-    cleanExpiredLocks(); // ⬅️ Tambahkan ini
+    cleanExpiredLocks();
   } catch (err) {
     console.error("Error in periodic flush:", err);
   }
 }, 100);
-
 
 serve((req) => {
   try {
@@ -290,93 +285,89 @@ serve((req) => {
             ws.send(JSON.stringify(["currentNumber", getCurrentNumber()]));
             break;
 
+          case "joinRoom": {
+            const newRoom: RoomName = data[1];
+            if (!allRooms.has(newRoom)) {
+              ws.send(JSON.stringify(["error", `Unknown room: ${newRoom}`]));
+              break;
+            }
 
+            const seatMap = roomSeats.get(newRoom)!;
+            let foundSeat: number | null = null;
 
-case "joinRoom": {
-  const newRoom: RoomName = data[1];
-  if (!allRooms.has(newRoom)) {
-    ws.send(JSON.stringify(["error", `Unknown room: ${newRoom}`]));
-    break;
-  }
+            // Pastikan user sudah punya kursi di room itu
+            if (ws.idtarget && userToSeat.has(ws.idtarget)) {
+              const prev = userToSeat.get(ws.idtarget)!;
+              if (prev.room === newRoom) {
+                const seatInfo = seatMap.get(prev.seat)!;
+                if (seatInfo.namauser === "") {
+                  foundSeat = prev.seat;
+                }
+              }
+            }
 
-  const seatMap = roomSeats.get(newRoom)!;
-  let foundSeat: number | null = null;
+            // Cari kursi kosong dan lock
+            if (foundSeat === null && ws.idtarget) {
+              for (let i = 1; i <= MAX_SEATS; i++) {
+                const kursi = seatMap.get(i)!;
+                if (kursi.namauser === "") {
+                  // Lock kursi
+                  kursi.namauser = "__LOCK__" + ws.idtarget;
+                  kursi.lockTime = Date.now();
+                  foundSeat = i;
+                  break;
+                }
+              }
+            }
 
-  // ✅ Cek apakah user sudah punya kursi di room itu sebelumnya
-  if (ws.idtarget && userToSeat.has(ws.idtarget)) {
-    const prev = userToSeat.get(ws.idtarget)!;
-    if (prev.room === newRoom) {
-      const seatInfo = seatMap.get(prev.seat)!;
-      if (seatInfo.namauser === "") {
-        foundSeat = prev.seat;
-      }
-    }
-  }
+            // Kalau tidak dapat kursi
+            if (foundSeat === null) {
+              ws.send(JSON.stringify(["roomFull", newRoom]));
+              break;
+            }
 
-  // ✅ Cari kursi kosong dan lock secara aman
-  if (foundSeat === null && ws.idtarget) {
-    for (let i = 1; i <= MAX_SEATS; i++) {
-      const kursi = seatMap.get(i)!;
-      if (kursi.namauser === "") {
-        // Lock kursi sementara
-      kursi.namauser = "__LOCK__" + ws.idtarget;
-kursi.lockTime = Date.now(); // ⬅️ Lock timestamp
+            const kursiFinal = seatMap.get(foundSeat)!;
+            if (!kursiFinal.namauser.startsWith("__LOCK__")) {
+              ws.send(JSON.stringify(["roomFull", newRoom]));
+              break;
+            }
 
-        foundSeat = i;
-        break;
-      }
-    }
-  }
+            // Bersihkan kursi lama
+            if (ws.roomname && ws.numkursi) {
+              const oldRoom = ws.roomname;
+              for (const s of ws.numkursi) {
+                resetSeat(roomSeats.get(oldRoom)!.get(s)!);
+                broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
+              }
+              broadcastRoomUserCount(oldRoom);
+            }
 
-  // ❌ Kalau tetap tidak dapat kursi
-  if (foundSeat === null) {
-    ws.send(JSON.stringify(["roomFull", newRoom]));
-    break;
-  }
+            ws.roomname = newRoom;
+            ws.numkursi = new Set([foundSeat]);
+            ws.send(JSON.stringify(["numberKursiSaya", foundSeat]));
 
-  // ✅ Pastikan lock masih berlaku
-  const kursiFinal = seatMap.get(foundSeat)!;
-  if (!kursiFinal.namauser.startsWith("__LOCK__")) {
-    ws.send(JSON.stringify(["roomFull", newRoom]));
-    break;
-  }
+            // Simpan user ↔ kursi
+            if (ws.idtarget) {
+              userToSeat.set(ws.idtarget, { room: newRoom, seat: foundSeat });
+            }
 
-  // ✅ Bersihkan kursi lama
-  if (ws.roomname && ws.numkursi) {
-    const oldRoom = ws.roomname; // simpan room lama
-    for (const s of ws.numkursi) {
-      resetSeat(roomSeats.get(oldRoom)!.get(s)!);
-      broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
-    }
-    broadcastRoomUserCount(oldRoom); // gunakan oldRoom, bukan ws.roomname
-  }
+            // Kirim kursi dan poin
+            const allPoints: any[] = [];
+            const meta: Record<number, Omit<SeatInfo, "points">> = {};
+            for (const [seat, info] of seatMap) {
+              for (const p of info.points) allPoints.push({ seat, ...p });
+              if (info.namauser && !info.namauser.startsWith("__LOCK__")) {
+                const { points, ...rest } = info;
+                meta[seat] = rest;
+              }
+            }
 
-  ws.roomname = newRoom;
-  ws.numkursi = new Set([foundSeat]);
-  ws.send(JSON.stringify(["numberKursiSaya", foundSeat]));
+            ws.send(JSON.stringify(["allPointsList", newRoom, allPoints]));
+            ws.send(JSON.stringify(["allUpdateKursiList", newRoom, meta]));
 
-  // ✅ Simpan user ↔ kursi
-  if (ws.idtarget) {
-    userToSeat.set(ws.idtarget, { room: newRoom, seat: foundSeat });
-  }
-
-  // ✅ Kirim kursi dan poin
-  const allPoints: any[] = [];
-  const meta: Record<number, Omit<SeatInfo, "points">> = {};
-  for (const [seat, info] of seatMap) {
-    for (const p of info.points) allPoints.push({ seat, ...p });
-    if (info.namauser && !info.namauser.startsWith("__LOCK__")) {
-      const { points, ...rest } = info;
-      meta[seat] = rest;
-    }
-  }
-
-  ws.send(JSON.stringify(["allPointsList", newRoom, allPoints]));
-  ws.send(JSON.stringify(["allUpdateKursiList", newRoom, meta]));
-
-  broadcastRoomUserCount(newRoom);
-  break;
-}
+            broadcastRoomUserCount(newRoom);
+            break;
+          }
 
           case "chat": {
             const [_, roomname, noImageURL, username, message, usernameColor, chatTextColor] = data;
@@ -384,7 +375,6 @@ kursi.lockTime = Date.now(); // ⬅️ Lock timestamp
               ws.send(JSON.stringify(["error", "Invalid room for chat"]));
               break;
             }
-
             if (!chatMessageBuffer.has(roomname)) {
               chatMessageBuffer.set(roomname, []);
             }
@@ -403,7 +393,6 @@ kursi.lockTime = Date.now(); // ⬅️ Lock timestamp
             if (!seatInfo) break;
 
             seatInfo.points.push({ x, y, fast });
-
             if (!pointUpdateBuffer.has(room)) {
               pointUpdateBuffer.set(room, new Map());
             }
@@ -432,75 +421,72 @@ kursi.lockTime = Date.now(); // ⬅️ Lock timestamp
             break;
           }
 
-         case "updateKursi": {
-  const [_, room, seat, noimageUrl, namauser, color, itembawah, itematas, vip, viptanda] = data;
-  if (!allRooms.has(room)) {
-    ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
-    break;
-  }
+          case "updateKursi": {
+            const [_, room, seat, noimageUrl, namauser, color, itembawah, itematas, vip, viptanda] = data;
+            if (!allRooms.has(room)) {
+              ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
+              break;
+            }
 
-  const seatInfo: SeatInfo = {
-    noimageUrl,
-    namauser,
-    color,
-    itembawah,
-    itematas,
-    vip,
-    viptanda,
-    points: [],
-  };
+            const seatInfo: SeatInfo = {
+              noimageUrl,
+              namauser,
+              color,
+              itembawah,
+              itematas,
+              vip,
+              viptanda,
+              points: [],
+            };
 
-  if (!updateKursiBuffer.has(room)) {
-    updateKursiBuffer.set(room, new Map());
-  }
-  updateKursiBuffer.get(room)!.set(seat, seatInfo);
-  roomSeats.get(room)!.set(seat, seatInfo);
+            if (!updateKursiBuffer.has(room)) {
+              updateKursiBuffer.set(room, new Map());
+            }
+            updateKursiBuffer.get(room)!.set(seat, seatInfo);
+            roomSeats.get(room)!.set(seat, seatInfo);
 
-  // ⬅️ Tambahkan ini supaya client dapat update jumlah user
-  broadcastRoomUserCount(room);
-
-  break;
-}
-
-
-
-
-ws.onclose = () => {
-  try {
-    console.log("❌ User disconnected:", ws.idtarget ?? "(unknown)");
-
-    const room = ws.roomname;
-    const kursis = ws.numkursi;
-
-    if (room && kursis && roomSeats.has(room)) {
-      const seatMap = roomSeats.get(room)!;
-
-      for (const seat of kursis) {
-        if (seatMap.has(seat)) {
-          resetSeat(seatMap.get(seat)!);
-          broadcastToRoom(room, ["removeKursi", room, seat]);
+            broadcastRoomUserCount(room);
+            break;
+          }
         }
+      } catch (err) {
+        console.error("Error handling message:", err);
       }
+    };
 
-      // Hapus dari peta userToSeat jika cocok
-      if (ws.idtarget && userToSeat.has(ws.idtarget)) {
-        const prev = userToSeat.get(ws.idtarget)!;
-        if (prev.room === room && kursis.has(prev.seat)) {
-          userToSeat.delete(ws.idtarget);
+    ws.onclose = () => {
+      try {
+        console.log("❌ User disconnected:", ws.idtarget ?? "(unknown)");
+        const room = ws.roomname;
+        const kursis = ws.numkursi;
+
+        if (room && kursis && roomSeats.has(room)) {
+          const seatMap = roomSeats.get(room)!;
+
+          for (const seat of kursis) {
+            if (seatMap.has(seat)) {
+              resetSeat(seatMap.get(seat)!);
+              broadcastToRoom(room, ["removeKursi", room, seat]);
+            }
+          }
+
+          if (ws.idtarget && userToSeat.has(ws.idtarget)) {
+            const prev = userToSeat.get(ws.idtarget)!;
+            if (prev.room === room && kursis.has(prev.seat)) {
+              userToSeat.delete(ws.idtarget);
+            }
+          }
+
+          broadcastRoomUserCount(room);
         }
+
+        clients.delete(ws);
+        ws.numkursi?.clear();
+        ws.roomname = undefined;
+      } catch (err) {
+        console.error("❗ Error on close:", err);
       }
-
-      broadcastRoomUserCount(room);
-    }
-
-    clients.delete(ws);
-    ws.numkursi?.clear();
-    ws.roomname = undefined;
-
-  } catch (err) {
-    console.error("❗ Error on close:", err);
-  }
-};
+    };
 
     return response;
   } catch (err) {
