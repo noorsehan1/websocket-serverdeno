@@ -68,13 +68,16 @@ function resetSeat(info: SeatInfo) {
 
 function broadcastToRoom(room: RoomName, msg: any[]) {
   for (const c of clients) {
-    if (c.roomname === room) {
+    if (c.roomname === room && c.readyState === WebSocket.OPEN) {
       try {
         c.send(JSON.stringify(msg));
-      } catch {}
+      } catch (e) {
+        console.error("broadcastToRoom error:", e);
+      }
     }
   }
 }
+
 
 function getJumlahRoom(): Record<RoomName, number> {
   const cnt = Object.fromEntries(roomList.map(room => [room, 0])) as Record<RoomName, number>;
@@ -92,6 +95,7 @@ function getJumlahRoom(): Record<RoomName, number> {
 
 function broadcastRoomUserCount(room: RoomName) {
   const count = getJumlahRoom()[room] || 0;
+  console.log(`[broadcastRoomUserCount] ${room}: ${count}`);
   broadcastToRoom(room, ["roomUserCount", room, count]);
 }
 
@@ -283,7 +287,7 @@ case "joinRoom": {
   const seatMap = roomSeats.get(newRoom)!;
   let foundSeat: number | null = null;
 
-  // ✅ Cek apakah user sudah punya kursi di room itu sebelumnya
+  // ✅ Cek apakah user sudah punya kursi sebelumnya di room yang sama
   if (ws.idtarget && userToSeat.has(ws.idtarget)) {
     const prev = userToSeat.get(ws.idtarget)!;
     if (prev.room === newRoom) {
@@ -294,12 +298,11 @@ case "joinRoom": {
     }
   }
 
-  // ✅ Cari kursi kosong dan lock secara aman
+  // ✅ Cari kursi kosong dan lock
   if (foundSeat === null && ws.idtarget) {
     for (let i = 1; i <= MAX_SEATS; i++) {
       const kursi = seatMap.get(i)!;
       if (kursi.namauser === "") {
-        // Lock kursi sementara
         kursi.namauser = "__LOCK__" + ws.idtarget;
         foundSeat = i;
         break;
@@ -313,7 +316,7 @@ case "joinRoom": {
     break;
   }
 
-  // ✅ Pastikan lock masih berlaku
+  // ✅ Pastikan kursi masih dalam keadaan terkunci
   const kursiFinal = seatMap.get(foundSeat)!;
   if (!kursiFinal.namauser.startsWith("__LOCK__")) {
     ws.send(JSON.stringify(["roomFull", newRoom]));
@@ -322,14 +325,17 @@ case "joinRoom": {
 
   // ✅ Bersihkan kursi lama
   if (ws.roomname && ws.numkursi) {
-    const oldRoom = ws.roomname; // simpan room lama
+    const oldRoom = ws.roomname;
     for (const s of ws.numkursi) {
       resetSeat(roomSeats.get(oldRoom)!.get(s)!);
       broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
     }
-    broadcastRoomUserCount(oldRoom); // gunakan oldRoom, bukan ws.roomname
+
+    // Update jumlah user di room lama
+    broadcastRoomUserCount(oldRoom);
   }
 
+  // ✅ Set data baru untuk WebSocket
   ws.roomname = newRoom;
   ws.numkursi = new Set([foundSeat]);
   ws.send(JSON.stringify(["numberKursiSaya", foundSeat]));
@@ -339,23 +345,31 @@ case "joinRoom": {
     userToSeat.set(ws.idtarget, { room: newRoom, seat: foundSeat });
   }
 
-  // ✅ Kirim kursi dan poin
+  // ✅ Kirim semua kursi & poin di room
   const allPoints: any[] = [];
   const meta: Record<number, Omit<SeatInfo, "points">> = {};
   for (const [seat, info] of seatMap) {
-    for (const p of info.points) allPoints.push({ seat, ...p });
+    for (const p of info.points) {
+      allPoints.push({ seat, ...p });
+    }
     if (info.namauser && !info.namauser.startsWith("__LOCK__")) {
       const { points, ...rest } = info;
       meta[seat] = rest;
     }
   }
 
+  // ✅ Kirim data ke klien
   ws.send(JSON.stringify(["allPointsList", newRoom, allPoints]));
   ws.send(JSON.stringify(["allUpdateKursiList", newRoom, meta]));
 
+  // ✅ Kirim jumlah user
   broadcastRoomUserCount(newRoom);
+
+  // ✅ Log untuk debug
+  console.log(`[joinRoom] ${ws.idtarget} masuk ke ${newRoom} kursi ${foundSeat}`);
   break;
 }
+
 
           case "chat": {
             const [_, roomname, noImageURL, username, message, usernameColor, chatTextColor] = data;
