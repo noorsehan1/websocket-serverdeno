@@ -267,11 +267,7 @@ serve((req) => {
 
 
 
-
-
-          
-
-         case "joinRoom": {
+case "joinRoom": {
   const newRoom: RoomName = data[1];
   if (!allRooms.has(newRoom)) {
     ws.send(JSON.stringify(["error", `Unknown room: ${newRoom}`]));
@@ -311,7 +307,7 @@ serve((req) => {
     break;
   }
 
-  // ✅ Pastikan lock masih berlaku (belum diambil orang lain dalam 1ms terakhir)
+  // ✅ Pastikan lock masih berlaku
   const kursiFinal = seatMap.get(foundSeat)!;
   if (!kursiFinal.namauser.startsWith("__LOCK__")) {
     ws.send(JSON.stringify(["roomFull", newRoom]));
@@ -320,12 +316,12 @@ serve((req) => {
 
   // ✅ Bersihkan kursi lama
   if (ws.roomname && ws.numkursi) {
+    const oldRoom = ws.roomname; // simpan room lama
     for (const s of ws.numkursi) {
-      const oldRoom = ws.roomname!;
       resetSeat(roomSeats.get(oldRoom)!.get(s)!);
       broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
     }
-    broadcastRoomUserCount(ws.roomname);
+    broadcastRoomUserCount(oldRoom); // gunakan oldRoom, bukan ws.roomname
   }
 
   ws.roomname = newRoom;
@@ -354,7 +350,6 @@ serve((req) => {
   broadcastRoomUserCount(newRoom);
   break;
 }
-
 
           case "chat": {
             const [_, roomname, noImageURL, username, message, usernameColor, chatTextColor] = data;
