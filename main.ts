@@ -464,7 +464,7 @@ if (ws.idtarget) {
 
           broadcastRoomUserCount(ws.roomname);
         }
-        clients.delete(ws);
+        
       } catch (err) {
         console.error("Error on close:", err);
       }
