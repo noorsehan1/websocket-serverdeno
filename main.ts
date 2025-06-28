@@ -267,26 +267,43 @@ case "resetRoom": {
   break;
 }
 
-case "updatePoint": {
+ case "updatePoint": {
   const [_, room, seat, x, y, fast] = data;
-  if (!allRooms.has(room)) return;
+  if (!allRooms.has(room)) {
+    ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
+    break;
+  }
+  if (typeof seat !== "number" || seat < 1 || seat > MAX_SEATS) {
+    ws.send(JSON.stringify(["error", `Invalid seat number: ${seat}`]));
+    break;
+  }
+
+  const seatInfo = roomSeats.get(room)!.get(seat);
+  if (!seatInfo) break;
+
+  seatInfo.points.push({ x, y, fast });
 
   if (!pointUpdateBuffer.has(room)) pointUpdateBuffer.set(room, new Map());
-  const seatMap = pointUpdateBuffer.get(room)!;
-  if (!seatMap.has(seat)) seatMap.set(seat, []);
-  seatMap.get(seat)!.push({ x, y, fast });
+  const roomBuffer = pointUpdateBuffer.get(room)!;
+  if (!roomBuffer.has(seat)) roomBuffer.set(seat, []);
+  roomBuffer.get(seat)!.push({ x, y, fast });
   break;
 }
 
 
+
 case "updateKursi": {
   const [_, room, seat, noimageUrl, namauser, color, itembawah, itematas, vip, viptanda] = data;
-  if (!allRooms.has(room)) return;
-  const seatMap = roomSeats.get(room)!;
-  const seatInfo = seatMap.get(seat);
-  if (!seatInfo) return;
+  if (!allRooms.has(room)) {
+    ws.send(JSON.stringify(["error", `Unknown room: ${room}`]));
+    break;
+  }
+  if (typeof seat !== "number" || seat < 1 || seat > MAX_SEATS) {
+    ws.send(JSON.stringify(["error", `Invalid seat number: ${seat}`]));
+    break;
+  }
 
-  Object.assign(seatInfo, {
+  const seatInfo: SeatInfo = {
     noimageUrl,
     namauser,
     color,
@@ -294,14 +311,27 @@ case "updateKursi": {
     itematas,
     vip: Boolean(vip),
     viptanda,
-  });
+    points: [],
+  };
 
-  // Masukkan ke buffer kursi untuk dikirim batch
+  // Simpan ke map utama
+  roomSeats.get(room)!.set(seat, seatInfo);
+
+  // Masukkan ke buffer
   if (!updateKursiBuffer.has(room)) updateKursiBuffer.set(room, new Map());
   updateKursiBuffer.get(room)!.set(seat, { ...seatInfo });
 
+  // Tandai kursi milik klien ini
+  ws.numkursi?.add(seat);
+
+  // Opsional: simpan mapping user ke kursi
+  if (ws.idtarget) {
+    userToSeat.set(ws.idtarget, { room, seat });
+  }
+
   break;
 }
+
 
 
 
