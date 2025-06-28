@@ -222,6 +222,90 @@ serve((req) => {
             }
             break;
           }
+
+    case "joinRoom": {
+  const room = data[1] as RoomName;
+  if (!allRooms.has(room)) return;
+
+  ws.roomname = room;
+  if (!ws.numkursi) ws.numkursi = new Set();
+  broadcastRoomUserCount(room);
+  break;
+}
+
+case "removeKursiAndPoint": {
+  const room = data[1] as RoomName;
+  const seat = data[2];
+  const map = roomSeats.get(room);
+  if (!map) return;
+  const seatInfo = map.get(seat);
+  if (seatInfo) {
+    resetSeat(seatInfo);
+    broadcastToRoom(room, ["removeKursi", room, seat]);
+    broadcastRoomUserCount(room);
+  }
+  break;
+}
+
+
+
+case "chat": {
+  const [_, room, noImage, username, message, nameColor, chatColor] = data;
+  const msg = ["chat", room, noImage, username, message, nameColor, chatColor];
+  if (!chatMessageBuffer.has(room)) chatMessageBuffer.set(room, []);
+  chatMessageBuffer.get(room)!.push(msg);
+  break;
+}
+
+case "resetRoom": {
+  const room = ws.roomname;
+  if (!room || !allRooms.has(room)) return;
+  const map = roomSeats.get(room)!;
+  for (const info of map.values()) resetSeat(info);
+  broadcastToRoom(room, ["resetRoom", room]);
+  broadcastRoomUserCount(room);
+  break;
+}
+
+case "updatePoint": {
+  const [_, room, seat, x, y, fast] = data;
+  if (!allRooms.has(room)) return;
+
+  if (!pointUpdateBuffer.has(room)) pointUpdateBuffer.set(room, new Map());
+  const seatMap = pointUpdateBuffer.get(room)!;
+  if (!seatMap.has(seat)) seatMap.set(seat, []);
+  seatMap.get(seat)!.push({ x, y, fast });
+  break;
+}
+
+
+case "updateKursi": {
+  const [_, room, seat, noimageUrl, namauser, color, itembawah, itematas, vip, viptanda] = data;
+  if (!allRooms.has(room)) return;
+  const seatMap = roomSeats.get(room)!;
+  const seatInfo = seatMap.get(seat);
+  if (!seatInfo) return;
+
+  Object.assign(seatInfo, {
+    noimageUrl,
+    namauser,
+    color,
+    itembawah,
+    itematas,
+    vip: Boolean(vip),
+    viptanda,
+  });
+
+  // Masukkan ke buffer kursi untuk dikirim batch
+  if (!updateKursiBuffer.has(room)) updateKursiBuffer.set(room, new Map());
+  updateKursiBuffer.get(room)!.set(seat, { ...seatInfo });
+
+  break;
+}
+
+
+
+
           case "sendnotif": {
             const [_, idtarget, noimageUrl, username, deskripsi] = data;
             const notifData = ["notif", noimageUrl, username, deskripsi, Date.now()];
