@@ -1,5 +1,19 @@
 {
+  "name": "chatroom-server",
+  "version": "1.0.0",
+  "description": "WebSocket chatroom server dengan seat lock dan point update",
+  "main": "main.ts",
+  "importMap": "import_map.json",
+  "tasks": {
+    "start": "deno run --allow-net main.ts --import-map=import_map.json"
+  },
   "deploy": {
     "regions": ["asia-southeast1"]
+  },
+  "fmt": {
+    "options": {
+      "lineWidth": 100,
+      "indentWidth": 2
+    }
   }
 }
