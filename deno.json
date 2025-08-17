@@ -1,0 +1,5 @@
+{
+  "deploy": {
+    "regions": ["asia-southeast1"]
+  }
+}
