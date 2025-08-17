@@ -5,7 +5,9 @@
   "main": "main.ts",
   "importMap": "import_map.json",
   "tasks": {
-    "start": "deno run --allow-net main.ts --import-map=import_map.json"
+    "start": "deno run --allow-net main.ts",
+    "check": "deno check main.ts",
+    "fmt": "deno fmt"
   },
   "deploy": {
     "regions": ["asia-southeast1"]
