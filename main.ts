@@ -89,15 +89,14 @@ function getJumlahRoom(): Record<RoomName, number> {
   return cnt;
 }
 
-function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
+// Fungsi tambahan: broadcastRoomUserCount
+function broadcastRoomUserCount(room: RoomName) {
   const allCounts = getJumlahRoom();
-  const result: Array<[RoomName, number]> = roomList.map(room => [room, allCounts[room]]);
-  try {
-    ws.send(JSON.stringify(["allRoomsUserCount", result]));
-  } catch {}
+  const count = allCounts[room] || 0;
+  broadcastToRoom(room, ["roomUserCount", room, count]);
 }
 
-// Buffering
+// Buffering dan data lainnya
 const pointUpdateBuffer: Map<RoomName, Map<number, Array<{ x: number; y: number; fast: number }>>> = new Map();
 const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
 const chatMessageBuffer: Map<RoomName, Array<any>> = new Map();
@@ -152,7 +151,7 @@ function flushKursiUpdates() {
   }
 }
 
-// Locking dan interval
+// Fungsi lock expiry dan interval
 let currentNumber = 1;
 const maxNumber = 6;
 const intervalMillis = 15 * 60 * 1000;
@@ -202,7 +201,7 @@ setInterval(() => {
   }
 }, 100);
 
-// Server
+// WebSocket server
 serve(async (req) => {
   try {
     const upgrade = req.headers.get("upgrade") || "";
@@ -210,7 +209,6 @@ serve(async (req) => {
       return new Response("Expected websocket", { status: 400 });
     }
 
-    // Upgrade connection to WebSocket
     const { socket, response } = Deno.upgradeWebSocket(req);
     const ws = socket as WebSocketWithRoom;
     clients.add(ws);
@@ -296,7 +294,6 @@ serve(async (req) => {
             const seatMap = roomSeats.get(newRoom)!;
             let foundSeat: number | null = null;
 
-            // Pastikan user sudah punya kursi di room itu
             if (ws.idtarget && userToSeat.has(ws.idtarget)) {
               const prev = userToSeat.get(ws.idtarget)!;
               if (prev.room === newRoom) {
@@ -307,12 +304,10 @@ serve(async (req) => {
               }
             }
 
-            // Cari kursi kosong dan lock
             if (foundSeat === null && ws.idtarget) {
               for (let i = 1; i <= MAX_SEATS; i++) {
                 const kursi = seatMap.get(i)!;
                 if (kursi.namauser === "") {
-                  // Lock kursi
                   kursi.namauser = "__LOCK__" + ws.idtarget;
                   kursi.lockTime = Date.now();
                   foundSeat = i;
@@ -346,12 +341,11 @@ serve(async (req) => {
             ws.numkursi = new Set([foundSeat]);
             ws.send(JSON.stringify(["numberKursiSaya", foundSeat]));
 
-            // Simpan user ↔ kursi
             if (ws.idtarget) {
               userToSeat.set(ws.idtarget, { room: newRoom, seat: foundSeat });
             }
 
-            // Kirim kursi dan poin
+            // Kirim data kursi dan poin
             const allPoints: any[] = [];
             const meta: Record<number, Omit<SeatInfo, "points">> = {};
             for (const [seat, info] of seatMap) {
@@ -412,8 +406,8 @@ serve(async (req) => {
             }
 
             resetSeat(roomSeats.get(room)!.get(seat)!);
-            for (const client of clients) {
-              client.numkursi?.delete(seat);
+            for (const c of clients) {
+              c.numkursi?.delete(seat);
             }
 
             broadcastToRoom(room, ["removeKursi", room, seat]);
