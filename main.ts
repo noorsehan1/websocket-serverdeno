@@ -1,4 +1,5 @@
-import { serve } from "std/http/server.ts";
+import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
+
 
 // ===== Constants & Types =====
 const roomList = [
