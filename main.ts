@@ -10,6 +10,7 @@ import {
  *  - Preserves original events, variable names, and logic shape
  *  - Replaces in-memory room/seat state with Redis structures
  *  - Adds Redis Pub/Sub so multiple servers stay in sync
+ *  - UPDATED: Supports Redis Cloud via REDIS_URL
  * =============================================================
  */
 
@@ -51,17 +52,34 @@ interface WebSocketWithRoom extends WebSocket {
   numkursi?: Set<number>;
 }
 
-// NOTE: userToSeat is moved to Redis; kept here only for local ephemerals
-const userToSeat: Map<string, { room: RoomName; seat: number }> = new Map();
-
-// ===== Redis Setup =====
+// REDIS connection info
+const REDIS_URL = Deno.env.get("REDIS_URL");
 const REDIS_HOST = Deno.env.get("REDIS_HOST") ?? "127.0.0.1";
 const REDIS_PORT = Number(Deno.env.get("REDIS_PORT") ?? "6379");
 const REDIS_BROADCAST_CHANNEL = Deno.env.get("REDIS_BROADCAST_CHANNEL") ?? "broadcast";
-const LOCK_TTL_MS = Number(Deno.env.get("LOCK_TTL_MS") ?? "10000"); // 10s like original
+const LOCK_TTL_MS = Number(Deno.env.get("LOCK_TTL_MS") ?? "10000"); // 10s
 
-const redis: Redis = await connect({ hostname: REDIS_HOST, port: REDIS_PORT });
-const sub: Redis = await connect({ hostname: REDIS_HOST, port: REDIS_PORT });
+// ===== Redis Setup (NOW SUPPORTS REDIS_URL) =====
+async function connectFromEnv(): Promise<{ redis: Redis; sub: Redis; info: string }> {
+  if (REDIS_URL) {
+    const u = new URL(REDIS_URL);
+    const hostname = u.hostname;
+    const port = parseInt(u.port || "6379");
+    const password = u.password || undefined;
+
+    const redis = await connect({ hostname, port, password });
+    const sub = await connect({ hostname, port, password });
+    console.log(`✅ Connected to Redis via REDIS_URL → ${hostname}:${port}`);
+    return { redis, sub, info: `${hostname}:${port}` };
+  } else {
+    const redis = await connect({ hostname: REDIS_HOST, port: REDIS_PORT });
+    const sub = await connect({ hostname: REDIS_HOST, port: REDIS_PORT });
+    console.log(`✅ Connected to Redis via host/port → ${REDIS_HOST}:${REDIS_PORT}`);
+    return { redis, sub, info: `${REDIS_HOST}:${REDIS_PORT}` };
+  }
+}
+
+const { redis, sub } = await connectFromEnv();
 
 // Fan-in Pub/Sub listener → forward to local sockets
 (async () => {
@@ -309,7 +327,6 @@ setInterval(() => {
     flushKursiUpdates();
     flushChatBuffer();
     flushPrivateMessageBuffer();
-    // clean locks slightly less often via another timer
   } catch (err) {
     console.error("Error in periodic flush:", err);
   }
@@ -353,8 +370,10 @@ async function handleJoinRoom(ws: WebSocketWithRoom, newRoom: RoomName) {
   ws.roomname = newRoom;
   ws.numkursi = new Set([foundSeat]);
   safeSend(ws, ["numberKursiSaya", foundSeat]);
-  if (ws.idtarget) userToSeat.set(ws.idtarget, { room: newRoom, seat: foundSeat });
-  if (ws.idtarget) await redis.set(keyUserToSeat(ws.idtarget), JSON.stringify({ room: newRoom, seat: foundSeat }));
+  if (ws.idtarget) {
+    userToSeat.set(ws.idtarget, { room: newRoom, seat: foundSeat });
+    await redis.set(keyUserToSeat(ws.idtarget), JSON.stringify({ room: newRoom, seat: foundSeat }));
+  }
 
   // collect existing points & meta for this room
   const allPoints: any[] = [];
@@ -506,7 +525,10 @@ async function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
         await handleRemoveKursi(ws, ...(args as [RoomName, number]));
         break;
       case "updateKursi":
-        await handleUpdateKursi(ws, ...(args as [RoomName, number, string, string, string, number, number, boolean, number]));
+        await handleUpdateKursi(
+          ws,
+          ...(args as [RoomName, number, string, string, string, number, number, boolean, number])
+        );
         break;
       case "sendnotif":
         handleSendNotif(ws, ...(args as [string, string, string, string]));
@@ -541,16 +563,15 @@ serve((req) => {
       console.log("Client connected");
     };
     ws.onmessage = (ev) => {
-      // run async but don't await in event loop
       handleMessage(ws, ev.data);
     };
     ws.onclose = async () => {
       try {
         console.log("❌ User disconnected:", ws.idtarget ?? "(unknown)");
         if (ws.roomname && ws.numkursi) {
-          for (const seat of ws.numkursi) {
-            await resetSeatRedis(ws.roomname, seat);
-            broadcastToRoomRedis(ws.roomname, ["removeKursi", ws.roomname, seat]);
+          for (const s of ws.numkursi) {
+            await resetSeatRedis(ws.roomname, s);
+            broadcastToRoomRedis(ws.roomname, ["removeKursi", ws.roomname, s]);
           }
           await broadcastRoomUserCount(ws.roomname);
         }
