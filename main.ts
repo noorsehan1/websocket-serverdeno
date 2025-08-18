@@ -1,4 +1,4 @@
-// ===== Import =====
+// ===== Imports =====
 import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
 // ===== Constants & Types =====
@@ -10,7 +10,6 @@ const roomList = [
 type RoomName = typeof roomList[number];
 const allRooms = new Set<RoomName>(roomList);
 const MAX_SEATS = 35;
-const clients = new Set<WebSocketWithRoom>();
 
 interface SeatInfo {
   noimageUrl: string;
@@ -30,6 +29,7 @@ interface WebSocketWithRoom extends WebSocket {
   numkursi?: Set<number>;
 }
 
+const clients = new Set<WebSocketWithRoom>();
 const userToSeat: Map<string, { room: RoomName; seat: number }> = new Map();
 const roomSeats: Map<RoomName, Map<number, SeatInfo>> = new Map();
 
@@ -149,6 +149,20 @@ function lockSeat(room: RoomName, ws: WebSocketWithRoom): number | null {
 function cleanupBuffers(ws: WebSocketWithRoom) {
   if (ws.idtarget) { privateMessageBuffer.delete(ws.idtarget); userToSeat.delete(ws.idtarget); }
 }
+function cleanupClient(ws: WebSocketWithRoom) {
+  try {
+    if (ws.roomname && ws.numkursi) {
+      const seatMap = roomSeats.get(ws.roomname)!;
+      for (const seat of ws.numkursi) { resetSeat(seatMap.get(seat)!); broadcastToRoom(ws.roomname, ["removeKursi", ws.roomname, seat]); }
+      broadcastRoomUserCount(ws.roomname);
+    }
+    cleanupBuffers(ws);
+  } finally {
+    clients.delete(ws);
+    ws.numkursi?.clear();
+    ws.roomname = undefined;
+  }
+}
 
 // ===== Periodic Flush =====
 setInterval(() => {
@@ -165,55 +179,93 @@ function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
     const data = JSON.parse(dataStr);
     if (!Array.isArray(data)) return;
     const [evt, ...args] = data;
+
     switch (evt) {
-      case "setIdTarget": ws.idtarget = args[0]; safeSend(ws, ["setIdTargetAck", ws.idtarget]); break;
-      case "ping": if (args[0] && ws.idtarget === args[0]) safeSend(ws, ["pong"]); break;
+      case "setIdTarget":
+        ws.idtarget = args[0];
+        safeSend(ws, ["setIdTargetAck", ws.idtarget]);
+        break;
+
+      case "ping":
+        if (args[0] && ws.idtarget === args[0]) safeSend(ws, ["pong"]);
+        break;
+
       case "getAllRoomsUserCount":
         safeSend(ws, ["allRoomsUserCount", roomList.map(r => [r, getJumlahRoom()[r]])]);
         break;
-      case "getCurrentNumber": safeSend(ws, ["currentNumber", currentNumber]); break;
+
+      case "getCurrentNumber":
+        safeSend(ws, ["currentNumber", currentNumber]);
+        break;
+
       case "joinRoom":
         try { assertValidRoom(args[0]); } catch { return; }
-        const newRoom = args[0]; const foundSeat = lockSeat(newRoom, ws);
+        const newRoom = args[0];
+        const foundSeat = lockSeat(newRoom, ws);
         if (foundSeat === null) return safeSend(ws, ["roomFull", newRoom]);
-        ws.roomname = newRoom; ws.numkursi = new Set([foundSeat]);
+        ws.roomname = newRoom;
+        ws.numkursi = new Set([foundSeat]);
         safeSend(ws, ["numberKursiSaya", foundSeat]);
         broadcastRoomUserCount(newRoom);
         break;
+
       case "chat":
         if (!chatMessageBuffer.has(args[0])) chatMessageBuffer.set(args[0], []);
         chatMessageBuffer.get(args[0])!.push(["chat", ...args]);
         break;
-      default: safeSend(ws, ["error", "Unknown event"]); break;
+
+      case "privateChat":
+        if (args[1]) {
+          if (!privateMessageBuffer.has(args[0])) privateMessageBuffer.set(args[0], []);
+          privateMessageBuffer.get(args[0])!.push(["privateChat", args[0], args[1]]);
+        }
+        break;
+
+      case "addPoint":
+        const [room, seat, point] = args;
+        if (!pointUpdateBuffer.has(room)) pointUpdateBuffer.set(room, new Map());
+        if (!pointUpdateBuffer.get(room)!.has(seat)) pointUpdateBuffer.get(room)!.set(seat, []);
+        pointUpdateBuffer.get(room)!.get(seat)!.push(point);
+        break;
+
+      case "updateKursi":
+        const [updRoom, seatNo, info] = args;
+        if (!updateKursiBuffer.has(updRoom)) updateKursiBuffer.set(updRoom, new Map());
+        updateKursiBuffer.get(updRoom)!.set(seatNo, { ...roomSeats.get(updRoom)!.get(seatNo)!, ...info });
+        break;
+
+      default:
+        safeSend(ws, ["error", "Unknown event"]);
+        break;
     }
-  } catch (err) { console.error("Error handling message:", err); }
+
+  } catch (err) {
+    console.error("Error handling message:", err);
+  }
 }
 
 // ===== Serve WebSocket =====
+const port = Number(Deno.env.get("PORT") || 8000);
+
 serve((req) => {
   const upgrade = req.headers.get("upgrade") || "";
   if (upgrade.toLowerCase() !== "websocket") return new Response("Expected websocket", { status: 400 });
 
-  const { socket, response } = Deno.upgradeWebSocket(req);
-  const ws = socket as WebSocketWithRoom;
-  clients.add(ws);
+  try {
+    const { socket, response } = Deno.upgradeWebSocket(req);
+    const ws = socket as WebSocketWithRoom;
+    clients.add(ws);
 
-  ws.onopen = () => { ws.numkursi = new Set<number>(); console.log("Client connected"); };
-  ws.onmessage = (ev) => handleMessage(ws, ev.data);
-  ws.onclose = () => {
-    try {
-      if (ws.roomname && ws.numkursi) {
-        const seatMap = roomSeats.get(ws.roomname)!;
-        for (const seat of ws.numkursi) { resetSeat(seatMap.get(seat)!); broadcastToRoom(ws.roomname, ["removeKursi", ws.roomname, seat]); }
-        broadcastRoomUserCount(ws.roomname);
-      }
-      cleanupBuffers(ws);
-    } finally {
-      clients.delete(ws);
-      ws.numkursi?.clear();
-      ws.roomname = undefined;
-    }
-  };
+    ws.onopen = () => { ws.numkursi = new Set<number>(); console.log("Client connected"); };
+    ws.onmessage = (ev) => handleMessage(ws, ev.data);
+    ws.onclose = () => cleanupClient(ws);
+    ws.onerror = () => cleanupClient(ws);
 
-  return response;
-});
+    return response;
+  } catch (err) {
+    console.error("Failed to upgrade websocket:", err);
+    return new Response("Internal Server Error", { status: 500 });
+  }
+}, { port });
+
+console.log(`WebSocket server running on port ${port}`);
