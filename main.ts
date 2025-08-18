@@ -1,6 +1,5 @@
 import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
-
 // ===== Constants & Types =====
 const roomList = [
   "Chill Zone",
@@ -71,7 +70,7 @@ function safeSend(ws: WebSocketWithRoom, msg: any) {
   } catch (err) {
     console.error("❌ Failed sending message to", ws.idtarget, ":", err);
     try { ws.close(); } catch {}
-    clients.delete(ws); // pastikan langsung dibuang
+    clients.delete(ws);
   }
 }
 
@@ -81,7 +80,7 @@ function assertValidRoom(room: any): room is RoomName {
 }
 
 function broadcastToRoom(room: RoomName, msg: any) {
-  for (const c of [...clients]) { // snapshot biar aman
+  for (const c of [...clients]) {
     if (c.roomname === room) safeSend(c, msg);
   }
 }
@@ -350,14 +349,21 @@ function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
 serve((req) => {
   try {
     const upgrade = req.headers.get("upgrade") || "";
-    if (upgrade.toLowerCase() !== "websocket") return new Response("Expected websocket", { status: 400 });
+    if (upgrade.toLowerCase() !== "websocket") {
+      return new Response("Expected websocket", { status: 400 });
+    }
 
     const { socket, response } = Deno.upgradeWebSocket(req);
     const ws = socket as WebSocketWithRoom;
     clients.add(ws);
 
-    ws.onopen = () => { ws.numkursi = new Set<number>(); console.log("Client connected"); };
+    ws.onopen = () => {
+      ws.numkursi = new Set<number>();
+      console.log("✅ Client connected");
+    };
+
     ws.onmessage = (ev) => handleMessage(ws, ev.data);
+
     ws.onclose = () => {
       try {
         console.log("❌ User disconnected:", ws.idtarget ?? "(unknown)");
@@ -384,4 +390,4 @@ serve((req) => {
     console.error("WebSocket upgrade error:", err);
     return new Response("Failed to upgrade websocket", { status: 500 });
   }
-});
+}, { onListen: undefined }); // 🚀 Fix: hilangkan log Listening on ...
