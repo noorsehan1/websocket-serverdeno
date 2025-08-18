@@ -1,4 +1,20 @@
-// file: realtime-kv-chat.ts
+// file: realtime-kv-chat-full.ts
+// Full Deno WebSocket server with Deno KV for cross-region realtime sync
+// Features:
+// - Rooms with seats (MAX_SEATS)
+// - Seat locking, update, remove
+// - Points (per-seat drawing updates) buffered & synced
+// - Chat messages per-room
+// - Private messages (persisted to KV for cross-instance delivery, ephemeral)
+// - User session keys in KV (ephemeral)
+// - KV.watch-based watchers for seats, chat, points, private messages
+// - Handlers use the same case/event strings as your original code
+//
+// Run with Deno (supports Deno.openKv). Example:
+//    deno run --allow-net --allow-read --allow-write --unstable realtime-kv-chat-full.ts
+//
+// Note: In production, ensure your Deno KV backend is available to all instances/regions.
+
 import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
 const kv = await Deno.openKv();
@@ -21,7 +37,6 @@ type RoomName = typeof roomList[number];
 
 const allRooms = new Set<RoomName>(roomList);
 const MAX_SEATS = 35;
-const clients = new Set<WebSocketWithRoom>();
 
 interface SeatInfo {
   noimageUrl: string;
@@ -41,7 +56,8 @@ interface WebSocketWithRoom extends WebSocket {
   numkursi?: Set<number>;
 }
 
-// Local in-memory mirror for fast operations (kecepatan lokal)
+// ===== Local mirrors & clients =====
+const clients = new Set<WebSocketWithRoom>();
 const userToSeat: Map<string, { room: RoomName; seat: number }> = new Map();
 const roomSeats: Map<RoomName, Map<number, SeatInfo>> = new Map();
 
@@ -56,7 +72,16 @@ for (const room of allRooms) {
 
 // ===== Utilities =====
 function createEmptySeat(): SeatInfo {
-  return { noimageUrl: "", namauser: "", color: "", itembawah: 0, itematas: 0, vip: false, viptanda: 0, points: [] };
+  return {
+    noimageUrl: "",
+    namauser: "",
+    color: "",
+    itembawah: 0,
+    itematas: 0,
+    vip: false,
+    viptanda: 0,
+    points: []
+  };
 }
 
 function resetSeat(info: SeatInfo) {
@@ -68,11 +93,10 @@ function safeSend(ws: WebSocketWithRoom, msg: any) {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg));
     } else {
-      console.warn("⚠️ Skip send, socket not open:", ws.idtarget);
       clients.delete(ws);
     }
   } catch (err) {
-    console.error("❌ Failed sending message to", ws.idtarget, ":", err);
+    console.error("safeSend error:", err);
     try { ws.close(); } catch {}
     clients.delete(ws);
   }
@@ -117,7 +141,6 @@ const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
 const chatMessageBuffer: Map<RoomName, Array<any>> = new Map();
 const privateMessageBuffer: Map<string, Array<any>> = new Map();
 
-// Buffer flushers (local broadcasting)
 function flushPrivateMessageBuffer() {
   for (const [idtarget, messages] of privateMessageBuffer) {
     for (const c of clients) if (c.idtarget === idtarget) messages.forEach(msg => safeSend(c, msg));
@@ -155,7 +178,7 @@ function flushKursiUpdates() {
   }
 }
 
-// ===== currentNumber (example periodic broadcast) =====
+// ===== currentNumber periodic broadcast =====
 let currentNumber = 1;
 const maxNumber = 6;
 const intervalMillis = 15 * 60 * 1000;
@@ -165,7 +188,7 @@ setInterval(() => {
   for (const c of [...clients]) safeSend(c, ["currentNumber", currentNumber]);
 }, intervalMillis);
 
-// ===== Locks cleaning (local) =====
+// ===== Locks cleaning (local and KV cleanup) =====
 function cleanExpiredLocks() {
   const now = Date.now();
   for (const room of allRooms) {
@@ -176,7 +199,7 @@ function cleanExpiredLocks() {
         broadcastToRoom(room, ["removeKursi", room, seat]);
         broadcastRoomUserCount(room);
         // ensure kv removal as well
-        kv.delete(["room", room, "seat", seat]).catch(err => console.warn("kv delete expired lock err", err));
+        kv.delete(["room", room, "seat", String(seat)]).catch(err => console.warn("kv delete expired lock err", err));
       }
     }
   }
@@ -194,6 +217,9 @@ function keyRoomPoints(room: RoomName, seat: number, id?: string) {
 }
 function keyUserSession(id: string) {
   return ["user", id, "session"];
+}
+function keyPrivate(toId: string, id?: string) {
+  return id ? ["private", toId, id] : ["private", toId];
 }
 
 // ===== KV helpers (async) =====
@@ -223,7 +249,6 @@ async function kvAddChat(room: RoomName, msg: any) {
 
 async function kvAddPoint(room: RoomName, seat: number, point: any) {
   try {
-    // use timestamp+random as ID to avoid collisions
     await kv.set(keyRoomPoints(room, seat, `${Date.now()}-${crypto.randomUUID()}`), point);
   } catch (err) {
     console.error("kvAddPoint error:", err);
@@ -246,9 +271,7 @@ async function kvSaveUserSession(ws: WebSocketWithRoom) {
 async function kvDeleteUserSession(ws: WebSocketWithRoom) {
   if (!ws.idtarget) return;
   try {
-    // delete the session key
     await kv.delete(keyUserSession(ws.idtarget));
-    // delete any keys with prefix ["user", id, ...] or keys referencing this id
     for await (const ent of kv.list({ prefix: ["user", ws.idtarget] })) {
       await kv.delete(ent.key);
     }
@@ -257,18 +280,25 @@ async function kvDeleteUserSession(ws: WebSocketWithRoom) {
   }
 }
 
-async function kvDeleteAllForUserId(id: string) {
-  // generic deletion of any keys we stored per-user (prefix ["user", id]) if used
+async function kvAddPrivate(toId: string, fromId: string, msg: any) {
   try {
-    for await (const ent of kv.list({ prefix: ["user", id] })) {
-      await kv.delete(ent.key);
-    }
+    await kv.set(keyPrivate(toId, crypto.randomUUID()), { from: fromId, ...msg });
   } catch (err) {
-    console.error("kvDeleteAllForUserId error:", err);
+    console.error("kvAddPrivate error:", err);
   }
 }
 
-// ===== Seat locking logic (local + kv mark) =====
+async function kvDeletePrivateForTarget(toId: string) {
+  try {
+    for await (const ent of kv.list({ prefix: ["private", toId] })) {
+      await kv.delete(ent.key);
+    }
+  } catch (err) {
+    console.error("kvDeletePrivateForTarget error:", err);
+  }
+}
+
+// ===== Seat locking logic (local + KV mark) =====
 function lockSeatLocal(room: RoomName, ws: WebSocketWithRoom): number | null {
   const seatMap = roomSeats.get(room)!;
   if (!ws.idtarget) return null;
@@ -293,7 +323,6 @@ async function lockSeat(room: RoomName, ws: WebSocketWithRoom): Promise<number |
   // first try local quick lock
   const found = lockSeatLocal(room, ws);
   if (found !== null) {
-    // write to KV to inform other instances
     const seatInfo = roomSeats.get(room)!.get(found)!;
     await kvUpdateSeat(room, found, seatInfo);
     return found;
@@ -305,10 +334,8 @@ async function lockSeat(room: RoomName, ws: WebSocketWithRoom): Promise<number |
       const key = keyRoomSeat(room, i);
       const res = await kv.get(key);
       if (!res.value) {
-        // attempt claim by writing marker (no CAS available in KV API here, but this is best-effort)
         const marker: SeatInfo = { ...createEmptySeat(), namauser: "__LOCK__" + ws.idtarget, lockTime: Date.now() };
         await kv.set(key, marker);
-        // update local mirror
         roomSeats.get(room)!.set(i, marker);
         return i;
       }
@@ -327,20 +354,7 @@ function cleanupBuffers(ws: WebSocketWithRoom) {
   }
 }
 
-// ===== Periodic flush (local) =====
-setInterval(() => {
-  try {
-    flushPointUpdates();
-    flushKursiUpdates();
-    flushChatBuffer();
-    flushPrivateMessageBuffer();
-    cleanExpiredLocks();
-  } catch (err) {
-    console.error("Error in periodic flush:", err);
-  }
-}, 100);
-
-// ===== Event Handlers (async where KV used) =====
+// ===== Event Handlers =====
 async function handleSetIdTarget(ws: WebSocketWithRoom, id: string) {
   ws.idtarget = id;
   await kvSaveUserSession(ws);
@@ -361,7 +375,6 @@ async function handleJoinRoom(ws: WebSocketWithRoom, newRoom: RoomName) {
     const oldRoom = ws.roomname;
     for (const s of ws.numkursi) {
       resetSeat(roomSeats.get(oldRoom)!.get(s)!);
-      // remove from KV as well
       kvRemoveSeat(oldRoom, s).catch(console.error);
       broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
     }
@@ -397,7 +410,6 @@ async function handleChat(ws: WebSocketWithRoom, roomname: RoomName, noImageURL:
   try { assertValidRoom(roomname); } catch { return safeSend(ws, ["error", "Invalid room for chat"]); }
 
   const chatMsg = ["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor, Date.now()];
-  // persist to KV for cross-instance distribution
   kvAddChat(roomname, chatMsg).catch(err => console.error("kvAddChat err", err));
 
   if (!chatMessageBuffer.has(roomname)) chatMessageBuffer.set(roomname, []);
@@ -417,7 +429,6 @@ function handleUpdatePoint(ws: WebSocketWithRoom, room: RoomName, seat: number, 
   if (!roomBuffer.has(seat)) roomBuffer.set(seat, []);
   roomBuffer.get(seat)!.push({ x, y, fast });
 
-  // write to KV for cross-instance
   kvAddPoint(room, seat, { x, y, fast, ts: Date.now() }).catch(err => console.error("kvAddPoint err", err));
 }
 
@@ -427,7 +438,6 @@ async function handleRemoveKursi(ws: WebSocketWithRoom, room: RoomName, seat: nu
   resetSeat(roomSeats.get(room)!.get(seat)!);
   for (const c of clients) c.numkursi?.delete(seat);
 
-  // remove from KV (so other instances broadcast removal)
   await kvRemoveSeat(room, seat).catch(err => console.error("kvRemoveSeat err", err));
 
   broadcastToRoom(room, ["removeKursi", room, seat]);
@@ -441,12 +451,8 @@ async function handleUpdateKursi(ws: WebSocketWithRoom, room: RoomName, seat: nu
   if (!updateKursiBuffer.has(room)) updateKursiBuffer.set(room, new Map());
   updateKursiBuffer.get(room)!.set(seat, seatInfo);
 
-  // update local mirror
   roomSeats.get(room)!.set(seat, seatInfo);
-
-  // persist to KV for cross-instance sync
   await kvUpdateSeat(room, seat, seatInfo);
-
   broadcastRoomUserCount(room);
 }
 
@@ -455,18 +461,59 @@ function handleSendNotif(ws: WebSocketWithRoom, idtarget: string, noimageUrl: st
   for (const c of [...clients]) if (c.idtarget === idtarget) safeSend(c, notifData);
 }
 
-function handlePrivate(ws: WebSocketWithRoom, idt: string, url: string, msg: string, sender: string) {
+async function handlePrivate(ws: WebSocketWithRoom, idt: string, url: string, msg: string, sender: string) {
   const ts = Date.now();
   const out = ["private", idt, url, msg, ts, sender];
+  // send to sender immediately
   safeSend(ws, out);
+  // store to KV so target can receive across instances
+  await kvAddPrivate(idt, sender, { url, msg, ts }).catch(err => console.error("kvAddPrivate err", err));
+  // Also buffer locally for immediate delivery if target on same instance
   if (!privateMessageBuffer.has(idt)) privateMessageBuffer.set(idt, []);
   privateMessageBuffer.get(idt)!.push(out);
-  // We intentionally do NOT persist private messages to KV (ephemeral & privacy reasons).
 }
 
 function handleIsUserOnline(ws: WebSocketWithRoom, target: string, tanda?: string) {
   const online = Array.from(clients).some(c => c.idtarget === target);
   safeSend(ws, ["userOnlineStatus", target, online, tanda ?? ""]);
+}
+
+async function handleKickUser(ws: WebSocketWithRoom, targetId: string) {
+  // Kick: remove user's seats and session from KV and notify their client if connected here
+  try {
+    // delete session key and any private messages intended for them
+    await kvDeleteAllForUserId(targetId);
+    await kvDeletePrivateForTarget(targetId);
+    // scan all rooms to remove any seats with that id
+    for (const room of allRooms) {
+      for (let i = 1; i <= MAX_SEATS; i++) {
+        try {
+          const key = keyRoomSeat(room, i);
+          const res = await kv.get(key);
+          if (res.value && (res.value as SeatInfo).namauser === targetId) {
+            await kv.delete(key);
+            // update local mirror
+            const info = roomSeats.get(room)!.get(i)!;
+            resetSeat(info);
+            broadcastToRoom(room, ["removeKursi", room, i]);
+            broadcastRoomUserCount(room);
+          }
+        } catch (err) {
+          console.error("kickUser scan err", err);
+        }
+      }
+    }
+
+    // if target connected to this instance, notify & close socket
+    for (const c of [...clients]) {
+      if (c.idtarget === targetId) {
+        safeSend(c, ["kicked", targetId]);
+        try { c.close(); } catch {}
+      }
+    }
+  } catch (err) {
+    console.error("handleKickUser err", err);
+  }
 }
 
 async function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
@@ -485,18 +532,18 @@ async function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
       case "removeKursiAndPoint": await handleRemoveKursi(ws, ...args); break;
       case "updateKursi": await handleUpdateKursi(ws, ...args); break;
       case "sendnotif": handleSendNotif(ws, ...args); break;
-      case "private": handlePrivate(ws, ...args); break;
+      case "private": await handlePrivate(ws, ...args); break;
       case "isUserOnline": handleIsUserOnline(ws, ...args); break;
+      case "kickUser": await handleKickUser(ws, ...args); break;
       default: safeSend(ws, ["error", "Unknown event"]); break;
     }
-  } catch (err) { 
-    console.error("Error handling message:", err, "raw:", dataStr); 
+  } catch (err) {
+    console.error("Error handling message:", err, "raw:", dataStr);
   }
 }
 
 // ===== KV watchers for cross-instance sync =====
-// These watchers will broadcast updates received via KV to local clients.
-// We watch seats, chats, and points.
+// seats, chat, points, private messages
 (async () => {
   for (const room of roomList) {
     // watch seats for this room
@@ -508,15 +555,14 @@ async function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
             const key = ev.key as string[]; // ["room", room, "seat", seatStr]
             const seatStr = key[3];
             const seat = parseInt(seatStr);
-            const kvVal = ev.value; // null => deleted
+            const kvVal = ev.value as SeatInfo | null;
             if (kvVal) {
               // update local mirror and broadcast
               roomSeats.get(room)!.set(seat, kvVal as SeatInfo);
-              // broadcast small update (single seat)
-              broadcastToRoom(room, ["kursiBatchUpdate", room, [[seat, (({ points, ...rest }: any) => rest)(kvVal)]]]);
+              const { points, ...rest } = kvVal as any;
+              broadcastToRoom(room, ["kursiBatchUpdate", room, [[seat, rest]]]);
             } else {
               // seat removed
-              // reset local mirror
               const info = roomSeats.get(room)!.get(seat)!;
               resetSeat(info);
               broadcastToRoom(room, ["removeKursi", room, seat]);
@@ -538,9 +584,7 @@ async function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
         for await (const ev of kv.watch({ prefix })) {
           try {
             if (ev.value) {
-              // chat message added
               const msg = ev.value;
-              // broadcast to local clients
               broadcastToRoom(room, msg);
             }
           } catch (inner) {
@@ -563,10 +607,8 @@ async function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
             const seat = parseInt(seatStr);
             if (ev.value) {
               const p = ev.value as { x: number; y: number; fast: number; ts?: number };
-              // add to local mirror
               const seatInfo = roomSeats.get(room)!.get(seat);
               if (seatInfo) seatInfo.points.push({ x: p.x, y: p.y, fast: p.fast });
-              // broadcast to local clients
               broadcastToRoom(room, ["pointUpdated", room, seat, p.x, p.y, p.fast]);
             }
           } catch (inner) {
@@ -578,6 +620,37 @@ async function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
       }
     })();
   }
+
+  // watch private messages for any target
+  (async () => {
+    const prefix = ["private"];
+    try {
+      for await (const ev of kv.watch({ prefix })) {
+        try {
+          if (ev.value) {
+            const key = ev.key as string[]; // ["private", targetId, uuid]
+            const targetId = key[1];
+            const val = ev.value as any; // { from, url, msg, ts }
+            // deliver to local clients that match targetId
+            for (const c of clients) {
+              if (c.idtarget === targetId) {
+                safeSend(c, ["private", targetId, val.url ?? "", val.msg ?? "", val.ts ?? Date.now(), val.from ?? ""]);
+              }
+            }
+            // Also store into local buffer for clients that connect later briefly (best-effort)
+            if (!privateMessageBuffer.has(targetId)) privateMessageBuffer.set(targetId, []);
+            privateMessageBuffer.get(targetId)!.push(["private", targetId, val.url ?? "", val.msg ?? "", val.ts ?? Date.now(), val.from ?? ""]);
+            // delete the KV key after reading so it's ephemeral
+            await kv.delete(ev.key);
+          }
+        } catch (inner) {
+          console.error("Error processing kv.watch private event:", inner);
+        }
+      }
+    } catch (err) {
+      console.error("kv.watch private error:", err);
+    }
+  })();
 })();
 
 // ===== Serve WebSocket =====
@@ -612,9 +685,10 @@ serve((req) => {
         }
         cleanupBuffers(ws);
 
-        // remove session & any per-user keys
         if (ws.idtarget) {
           await kvDeleteUserSession(ws).catch(err => console.error("kvDeleteUserSession err", err));
+          // also remove private messages for the user (optional)
+          await kvDeletePrivateForTarget(ws.idtarget).catch(err => console.error("kvDeletePrivateForTarget err", err));
           // also attempt removal of keys that might bear "__LOCK__<id>" in namauser
           // We scan seats and remove any seat that still has the lock from this id (best-effort)
           for (const r of allRooms) {
@@ -628,7 +702,6 @@ serve((req) => {
             }
           }
         }
-
       } catch (err) {
         console.error("❗ Error on close:", err);
       } finally {
