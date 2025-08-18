@@ -60,8 +60,18 @@ function resetSeat(info: SeatInfo) {
 }
 
 function safeSend(ws: WebSocketWithRoom, msg: any) {
-  try { ws.send(JSON.stringify(msg)); }
-  catch (err) { console.error("❌ Failed sending message:", err); }
+  try {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
+    } else {
+      console.warn("⚠️ Skip send, socket not open:", ws.idtarget);
+      clients.delete(ws);
+    }
+  } catch (err) {
+    console.error("❌ Failed sending message to", ws.idtarget, ":", err);
+    try { ws.close(); } catch {}
+    clients.delete(ws); // pastikan langsung dibuang
+  }
 }
 
 function assertValidRoom(room: any): room is RoomName {
@@ -70,7 +80,9 @@ function assertValidRoom(room: any): room is RoomName {
 }
 
 function broadcastToRoom(room: RoomName, msg: any) {
-  for (const c of clients) if (c.roomname === room) safeSend(c, msg);
+  for (const c of [...clients]) { // snapshot biar aman
+    if (c.roomname === room) safeSend(c, msg);
+  }
 }
 
 function getJumlahRoom(): Record<RoomName, number> {
@@ -145,7 +157,7 @@ const intervalMillis = 15 * 60 * 1000;
 
 setInterval(() => {
   currentNumber = currentNumber < maxNumber ? currentNumber + 1 : 1;
-  for (const c of clients) safeSend(c, ["currentNumber", currentNumber]);
+  for (const c of [...clients]) safeSend(c, ["currentNumber", currentNumber]);
 }, intervalMillis);
 
 // ===== Locks =====
@@ -220,7 +232,6 @@ function handleJoinRoom(ws: WebSocketWithRoom, newRoom: RoomName) {
   const foundSeat = lockSeat(newRoom, ws);
   if (foundSeat === null) return safeSend(ws, ["roomFull", newRoom]);
 
-  // Bersihkan kursi lama
   if (ws.roomname && ws.numkursi) {
     const oldRoom = ws.roomname;
     for (const s of ws.numkursi) {
@@ -235,7 +246,6 @@ function handleJoinRoom(ws: WebSocketWithRoom, newRoom: RoomName) {
   safeSend(ws, ["numberKursiSaya", foundSeat]);
   if (ws.idtarget) userToSeat.set(ws.idtarget, { room: newRoom, seat: foundSeat });
 
-  // Kirim semua kursi & point
   const allPoints: any[] = [];
   const meta: Record<number, Omit<SeatInfo, "points">> = {};
   const seatMap = roomSeats.get(newRoom)!;
@@ -261,7 +271,6 @@ function handleChat(ws: WebSocketWithRoom, roomname: RoomName, noImageURL: strin
 
 function handleUpdatePoint(ws: WebSocketWithRoom, room: RoomName, seat: number, x: number, y: number, fast: number) {
   try { assertValidRoom(room); } catch { return safeSend(ws, ["error", `Unknown room: ${room}`]); }
-
   const seatMap = roomSeats.get(room)!;
   const seatInfo = seatMap.get(seat);
   if (!seatInfo) return;
@@ -295,7 +304,7 @@ function handleUpdateKursi(ws: WebSocketWithRoom, room: RoomName, seat: number, 
 
 function handleSendNotif(ws: WebSocketWithRoom, idtarget: string, noimageUrl: string, username: string, deskripsi: string) {
   const notifData = ["notif", noimageUrl, username, deskripsi, Date.now()];
-  for (const c of clients) if (c.idtarget === idtarget) safeSend(c, notifData);
+  for (const c of [...clients]) if (c.idtarget === idtarget) safeSend(c, notifData);
 }
 
 function handlePrivate(ws: WebSocketWithRoom, idt: string, url: string, msg: string, sender: string) {
@@ -315,7 +324,6 @@ function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
   try {
     const data = JSON.parse(dataStr);
     if (!Array.isArray(data) || data.length === 0) return safeSend(ws, ["error", "Invalid message format"]);
-
     const [evt, ...args] = data;
     switch (evt) {
       case "setIdTarget": handleSetIdTarget(ws, ...args); break;
@@ -332,7 +340,9 @@ function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
       case "isUserOnline": handleIsUserOnline(ws, ...args); break;
       default: safeSend(ws, ["error", "Unknown event"]); break;
     }
-  } catch (err) { console.error("Error handling message:", err); }
+  } catch (err) { 
+    console.error("Error handling message:", err, "raw:", dataStr); 
+  }
 }
 
 // ===== Serve WebSocket =====
@@ -359,10 +369,13 @@ serve((req) => {
           broadcastRoomUserCount(ws.roomname);
         }
         cleanupBuffers(ws);
+      } catch (err) {
+        console.error("❗ Error on close:", err);
+      } finally {
         clients.delete(ws);
         ws.numkursi?.clear();
         ws.roomname = undefined;
-      } catch (err) { console.error("❗ Error on close:", err); }
+      }
     };
 
     return response;
