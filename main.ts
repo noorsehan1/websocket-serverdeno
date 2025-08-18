@@ -1,6 +1,3 @@
-// ===== Import =====
-import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
-
 // ===== Constants & Types =====
 const roomList = [
   "Chill Zone", "Catch Up", "Casual Vibes", "Lounge Talk", "Easy Talk",
@@ -10,7 +7,6 @@ const roomList = [
 type RoomName = typeof roomList[number];
 const allRooms = new Set<RoomName>(roomList);
 const MAX_SEATS = 35;
-const clients = new Set<WebSocketWithRoom>();
 
 interface SeatInfo {
   noimageUrl: string;
@@ -30,6 +26,7 @@ interface WebSocketWithRoom extends WebSocket {
   numkursi?: Set<number>;
 }
 
+const clients = new Set<WebSocketWithRoom>();
 const userToSeat: Map<string, { room: RoomName; seat: number }> = new Map();
 const roomSeats: Map<RoomName, Map<number, SeatInfo>> = new Map();
 
@@ -131,8 +128,6 @@ function cleanExpiredLocks() {
     }
   }
 }
-
-// ===== Helpers =====
 function lockSeat(room: RoomName, ws: WebSocketWithRoom): number | null {
   const seatMap = roomSeats.get(room)!;
   if (!ws.idtarget) return null;
@@ -189,8 +184,8 @@ function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
   } catch (err) { console.error("Error handling message:", err); }
 }
 
-// ===== Serve WebSocket =====
-serve((req) => {
+// ===== Deno Deploy Handler =====
+export default function handler(req: Request) {
   const upgrade = req.headers.get("upgrade") || "";
   if (upgrade.toLowerCase() !== "websocket") return new Response("Expected websocket", { status: 400 });
 
@@ -198,13 +193,21 @@ serve((req) => {
   const ws = socket as WebSocketWithRoom;
   clients.add(ws);
 
-  ws.onopen = () => { ws.numkursi = new Set<number>(); console.log("Client connected"); };
-  ws.onmessage = (ev) => handleMessage(ws, ev.data);
-  ws.onclose = () => {
+  ws.addEventListener("open", () => {
+    ws.numkursi = new Set<number>();
+    console.log("Client connected");
+  });
+
+  ws.addEventListener("message", (ev) => handleMessage(ws, ev.data));
+
+  ws.addEventListener("close", () => {
     try {
       if (ws.roomname && ws.numkursi) {
         const seatMap = roomSeats.get(ws.roomname)!;
-        for (const seat of ws.numkursi) { resetSeat(seatMap.get(seat)!); broadcastToRoom(ws.roomname, ["removeKursi", ws.roomname, seat]); }
+        for (const seat of ws.numkursi) {
+          resetSeat(seatMap.get(seat)!);
+          broadcastToRoom(ws.roomname, ["removeKursi", ws.roomname, seat]);
+        }
         broadcastRoomUserCount(ws.roomname);
       }
       cleanupBuffers(ws);
@@ -213,7 +216,7 @@ serve((req) => {
       ws.numkursi?.clear();
       ws.roomname = undefined;
     }
-  };
+  });
 
   return response;
-});
+}
