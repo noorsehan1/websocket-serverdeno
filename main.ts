@@ -1,12 +1,16 @@
-import { serve } from "https://deno.land/std@0.140.0/http/server.ts";
+// =====================
+// IMPORT
+// =====================
+import { serve } from "https://deno.land/std/http/server.ts";
 
-// no need to import WebSocket
+// =====================
+// TYPES & INTERFACES
+// =====================
 interface WebSocketWithRoom extends WebSocket {
   roomname?: string;
   idtarget?: string;
   userId?: string;
 }
-
 
 interface SeatInfo {
   id: string;
@@ -34,7 +38,9 @@ const kv = await Deno.openKv();
 function broadcastToRoom(room: string, data: any) {
   for (const client of clients) {
     if (client.roomname === room) {
-      try { client.send(JSON.stringify(data)); } catch (_) {}
+      try {
+        client.send(JSON.stringify(data));
+      } catch (_) {}
     }
   }
 }
@@ -55,8 +61,12 @@ function broadcastRoomUserCount(room: string) {
 // =====================
 // EVENT HANDLERS
 // =====================
-
-async function handleJoinRoom(ws: WebSocketWithRoom, room: string, seat: number, userId: string) {
+async function handleJoinRoom(
+  ws: WebSocketWithRoom,
+  room: string,
+  seat: number,
+  userId: string,
+) {
   ws.roomname = room;
   ws.userId = userId;
   if (!roomSeats.has(room)) roomSeats.set(room, new Map());
@@ -213,7 +223,9 @@ setInterval(async () => {
         const [_, targetId] = e.key as [string, string, string];
         for (const client of clients) {
           if (client.userId === targetId) {
-            try { client.send(JSON.stringify(["private", e.value])); } catch (_) {}
+            try {
+              client.send(JSON.stringify(["private", e.value]));
+            } catch (_) {}
           }
         }
       }
@@ -237,7 +249,10 @@ setInterval(async () => {
 // SERVER
 // =====================
 serve((req) => {
-  if (req.headers.get("upgrade") !== "websocket") return new Response("Not a websocket request");
+  if (req.headers.get("upgrade") !== "websocket") {
+    return new Response("Not a websocket request");
+  }
+
   const { socket, response } = Deno.upgradeWebSocket(req);
   const ws = socket as WebSocketWithRoom;
   clients.add(ws);
@@ -250,7 +265,9 @@ serve((req) => {
           ws.idtarget = args[0];
           break;
         case "ping":
-          if (ws.userId) await kv.set(["online", ws.userId], true, { expireIn: 20_000 });
+          if (ws.userId) {
+            await kv.set(["online", ws.userId], true, { expireIn: 20_000 });
+          }
           ws.send(JSON.stringify(["pong"]));
           break;
         case "joinRoom":
@@ -276,7 +293,11 @@ serve((req) => {
           break;
         case "sendnotif":
           if (ws.roomname) {
-            await kv.set(["notif", ws.roomname, crypto.randomUUID()], args[0], { expireIn: 10_000 });
+            await kv.set(
+              ["notif", ws.roomname, crypto.randomUUID()],
+              args[0],
+              { expireIn: 10_000 },
+            );
           }
           break;
       }
@@ -292,7 +313,11 @@ serve((req) => {
       if (seatData) {
         await kv.delete(["room", seatData.room, seatData.seat]);
         roomSeats.get(seatData.room)?.delete(seatData.seat);
-        broadcastToRoom(seatData.room, ["removeKursi", seatData.room, seatData.seat]);
+        broadcastToRoom(seatData.room, [
+          "removeKursi",
+          seatData.room,
+          seatData.seat,
+        ]);
       }
       await kv.delete(["point", ws.roomname, ws.userId]);
       await kv.delete(["online", ws.userId]);
