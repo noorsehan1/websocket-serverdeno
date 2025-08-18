@@ -1,14 +1,12 @@
 import { serve } from "https://deno.land/std@0.140.0/http/server.ts";
-import { WebSocket } from "https://deno.land/std@0.140.0/ws/mod.ts";
 
-// =====================
-// TYPES & INTERFACES
-// =====================
+// no need to import WebSocket
 interface WebSocketWithRoom extends WebSocket {
   roomname?: string;
   idtarget?: string;
   userId?: string;
 }
+
 
 interface SeatInfo {
   id: string;
