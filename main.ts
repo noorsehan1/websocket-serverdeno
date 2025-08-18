@@ -1,29 +1,19 @@
+// server.ts
 import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
 // ===== Deno KV (Realtime Global Ephemeral) =====
 const kv = await Deno.openKv();
 const serverId = (globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2));
 
-// TTL (ms) untuk data sementara
+// TTL (ms) untuk data sementara — sesuaikan jika perlu
 const TTL = {
-  seat: 30_000,
-  point: 5_000,
-  chat: 10_000,
-  private: 30_000,
-  lock: 10_000,
+  seat: 30_000,    // kursi aktif tersimpan 30s (diperbarui tiap update)
+  point: 5_000,    // movement very short
+  chat: 20_000,    // chat ephemeral
+  private: 30_000, // private message short-lived
+  lock: 10_000,    // global lock kursi
+  online: 20_000,  // online flag
 } as const;
-
-// Helper KV
-async function kvSetTemp(key: Deno.KvKey, value: unknown, ttlMs: number) {
-  await kv.set(key, value, { expireIn: ttlMs });
-}
-async function kvGet<T>(key: Deno.KvKey): Promise<T | null> {
-  const r = await kv.get<T>(key);
-  return r.value ?? null;
-}
-async function kvDelete(key: Deno.KvKey) {
-  await kv.delete(key);
-}
 
 // ===== Constants & Types =====
 const roomList = [
@@ -55,6 +45,7 @@ interface SeatInfo {
   viptanda: number;
   points: Array<{ x: number; y: number; fast: number }>;
   lockTime?: number;
+  _origin?: string;
 }
 
 interface WebSocketWithRoom extends WebSocket {
@@ -63,10 +54,11 @@ interface WebSocketWithRoom extends WebSocket {
   numkursi?: Set<number>;
 }
 
+// main in-memory maps
 const userToSeat: Map<string, { room: RoomName; seat: number }> = new Map();
 const roomSeats: Map<RoomName, Map<number, SeatInfo>> = new Map();
 
-// ===== Initialize Seats =====
+// ===== Initialize Seats (in-memory) =====
 for (const room of allRooms) {
   const seatMap = new Map<number, SeatInfo>();
   for (let i = 1; i <= MAX_SEATS; i++) {
@@ -95,7 +87,7 @@ function safeSend(ws: WebSocketWithRoom, msg: any) {
   } catch (err) {
     console.error("❌ Failed sending message to", ws.idtarget, ":", err);
     try { ws.close(); } catch {}
-    clients.delete(ws); // pastikan langsung dibuang
+    clients.delete(ws);
   }
 }
 
@@ -105,7 +97,7 @@ function assertValidRoom(room: any): room is RoomName {
 }
 
 function broadcastToRoom(room: RoomName, msg: any) {
-  for (const c of [...clients]) { // snapshot biar aman
+  for (const c of [...clients]) { // snapshot to avoid mutation while iterating
     if (c.roomname === room) safeSend(c, msg);
   }
 }
@@ -138,6 +130,7 @@ const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
 const chatMessageBuffer: Map<RoomName, Array<any>> = new Map();
 const privateMessageBuffer: Map<string, Array<any>> = new Map();
 
+// flush helpers
 function flushPrivateMessageBuffer() {
   for (const [idtarget, messages] of privateMessageBuffer) {
     for (const c of clients) if (c.idtarget === idtarget) messages.forEach(msg => safeSend(c, msg));
@@ -165,7 +158,7 @@ function flushKursiUpdates() {
   for (const [room, seatMap] of updateKursiBuffer) {
     const updates: Array<[number, Omit<SeatInfo, "points">]> = [];
     for (const [seat, info] of seatMap) {
-      const { points, ...rest } = info;
+      const { points, _origin, ...rest } = info;
       updates.push([seat, rest]);
     }
     if (updates.length > 0) {
@@ -175,33 +168,92 @@ function flushKursiUpdates() {
   }
 }
 
-// ===== Current Number =====
+// ===== Current Number (example ticker) =====
 let currentNumber = 1;
 const maxNumber = 6;
 const intervalMillis = 15 * 60 * 1000;
-
 setInterval(() => {
   currentNumber = currentNumber < maxNumber ? currentNumber + 1 : 1;
   for (const c of [...clients]) safeSend(c, ["currentNumber", currentNumber]);
 }, intervalMillis);
 
-// ===== Locks =====
+// ===== Locks Cleanup (local) =====
 function cleanExpiredLocks() {
   const now = Date.now();
   for (const room of allRooms) {
     const seatMap = roomSeats.get(room)!;
     for (const [seat, info] of seatMap) {
-      if (info.namauser.startsWith("__LOCK__") && info.lockTime && now - info.lockTime > 10000) {
+      if (info.namauser.startsWith("__LOCK__") && info.lockTime && now - info.lockTime > TTL.lock) {
         resetSeat(info);
         broadcastToRoom(room, ["removeKursi", room, seat]);
         broadcastRoomUserCount(room);
+        // also delete KV if exists (best-effort)
+        kv.delete(["seat", room, seat]).catch(() => {});
       }
     }
   }
 }
 
-// ===== Seat & Buffer Utilities =====
-function lockSeat(room: RoomName, ws: WebSocketWithRoom): number | null {
+// ===== KV Helpers =====
+async function kvSetTemp(key: Deno.KvKey, value: unknown, ttlMs: number) {
+  await kv.set(key, value, { expireIn: ttlMs });
+}
+async function kvGet<T>(key: Deno.KvKey): Promise<T | null> {
+  const r = await kv.get<T>(key);
+  return r.value ?? null;
+}
+async function kvDelete(key: Deno.KvKey) {
+  await kv.delete(key);
+}
+
+/**
+ * Atomic set-if-not-exists using KV atomic()
+ * returns true if set succeeded (key was absent), false otherwise
+ */
+async function kvSetIfAbsent(key: Deno.KvKey, value: unknown, ttlMs: number): Promise<boolean> {
+  const tx = kv.atomic().check({ key, version: null }).set(key, value, { expireIn: ttlMs });
+  try {
+    const res = await tx.commit();
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ===== Seat & KV-aware Lock Utilities =====
+async function lockSeatKV(room: RoomName, ws: WebSocketWithRoom): Promise<number | null> {
+  if (!ws.idtarget) return null;
+
+  // if user already has seat recorded in KV, try reuse
+  const existing = await kvGet<{ room: RoomName; seat: number }>(["userSeat", ws.idtarget]);
+  if (existing && existing.room === room) {
+    const seatInfo = await kvGet<SeatInfo>(["seat", room, existing.seat]);
+    // if seat exists and held by same id or free, try to acquire lock
+    // We'll attempt set-if-absent on lock key
+    const ok = await kvSetIfAbsent(["lock", room, existing.seat], { id: ws.idtarget, t: Date.now() }, TTL.lock);
+    if (ok) {
+      // write a "__LOCK__" placeholder into seat key
+      await kvSetTemp(["seat", room, existing.seat], { ...createEmptySeat(), namauser: "__LOCK__" + ws.idtarget, lockTime: Date.now(), _origin: serverId }, TTL.seat);
+      await kvSetTemp(["userSeat", ws.idtarget], { room, seat: existing.seat }, TTL.seat);
+      return existing.seat;
+    }
+  }
+
+  // search for empty seat globally by trying to set lock key
+  for (let i = 1; i <= MAX_SEATS; i++) {
+    const lockKey = ["lock", room, i];
+    const ok = await kvSetIfAbsent(lockKey, { id: ws.idtarget, t: Date.now() }, TTL.lock);
+    if (!ok) continue;
+    // place temporary seat lock
+    await kvSetTemp(["seat", room, i], { ...createEmptySeat(), namauser: "__LOCK__" + ws.idtarget, lockTime: Date.now(), _origin: serverId }, TTL.seat);
+    await kvSetTemp(["userSeat", ws.idtarget], { room, seat: i }, TTL.seat);
+    return i;
+  }
+
+  return null;
+}
+
+function lockSeatLocal(room: RoomName, ws: WebSocketWithRoom): number | null {
   const seatMap = roomSeats.get(room)!;
   if (!ws.idtarget) return null;
 
@@ -228,7 +280,7 @@ function cleanupBuffers(ws: WebSocketWithRoom) {
   }
 }
 
-// ===== Periodic Flush =====
+// ===== Periodic Flush (local buffers) =====
 setInterval(() => {
   try {
     flushPointUpdates();
@@ -248,22 +300,37 @@ function handleSetIdTarget(ws: WebSocketWithRoom, id: string) {
 }
 
 function handlePing(ws: WebSocketWithRoom, pingId: string) {
-  if (pingId && ws.idtarget === pingId) safeSend(ws, ["pong"]);
+  if (pingId && ws.idtarget === pingId) {
+    // refresh online flag in KV
+    if (ws.idtarget) kvSetTemp(["online", ws.idtarget], { online: true, _origin: serverId }, TTL.online).catch(() => {});
+    safeSend(ws, ["pong"]);
+  }
+}
+
+function handleGetCurrentNumber(ws: WebSocketWithRoom) {
+  safeSend(ws, ["currentNumber", currentNumber]);
 }
 
 async function handleJoinRoom(ws: WebSocketWithRoom, newRoom: RoomName) {
   try { assertValidRoom(newRoom); } catch { return safeSend(ws, ["error", `Unknown room: ${newRoom}`]); }
 
-  const foundSeat = lockSeat(newRoom, ws);
+  // Try KV-based global lock first (preferred) to avoid double assign
+  let foundSeat = await lockSeatKV(newRoom, ws);
+  if (foundSeat === null) {
+    // fallback to local lock (rare)
+    foundSeat = lockSeatLocal(newRoom, ws);
+  }
   if (foundSeat === null) return safeSend(ws, ["roomFull", newRoom]);
 
+  // If ws already had a room, cleanup
   if (ws.roomname && ws.numkursi) {
     const oldRoom = ws.roomname;
     for (const s of ws.numkursi) {
       resetSeat(roomSeats.get(oldRoom)!.get(s)!);
       broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
-      // hapus dari KV (sinkron global)
+      // also delete KV old seat (best-effort)
       kvDelete(["seat", oldRoom, s]).catch(() => {});
+      kvDelete(["lock", oldRoom, s]).catch(() => {});
     }
     broadcastRoomUserCount(oldRoom);
   }
@@ -273,34 +340,47 @@ async function handleJoinRoom(ws: WebSocketWithRoom, newRoom: RoomName) {
   safeSend(ws, ["numberKursiSaya", foundSeat]);
   if (ws.idtarget) userToSeat.set(ws.idtarget, { room: newRoom, seat: foundSeat });
 
-  // Merge snapshot kursi dari KV (agar sinkron dengan region lain)
+  // Snapshot kursi dari KV to ensure we have latest across regions
   try {
-    const it = kv.list<any>({ prefix: ["seat", newRoom] });
+    const iter = kv.list<SeatInfo>({ prefix: ["seat", newRoom] });
+    const meta: Record<number, Omit<SeatInfo, "points">> = {};
     const seatMap = roomSeats.get(newRoom)!;
-    for await (const { key, value } of it) {
-      const seatNo = key[2] as number;
-      if (value) {
-        // value bisa memuat _origin, abaikan saja
-        const { _origin, ...raw } = value as any;
-        seatMap.set(seatNo, { points: [], ...createEmptySeat(), ...raw });
+    for await (const { key, value } of iter) {
+      const seat = key[2] as number;
+      if (!value) continue;
+      // ignore origin here
+      const { _origin, points, ...rest } = value as any;
+      seatMap.set(seat, { points: points ?? [], ...createEmptySeat(), ...(rest as Omit<SeatInfo,"points">) });
+      if (rest.namauser && !String(rest.namauser).startsWith("__LOCK__")) {
+        meta[seat] = rest;
       }
     }
-  } catch {}
 
-  const allPoints: any[] = [];
-  const meta: Record<number, Omit<SeatInfo, "points">> = {};
-  const seatMap = roomSeats.get(newRoom)!;
-  for (const [seat, info] of seatMap) {
-    for (const p of info.points) allPoints.push({ seat, ...p });
-    if (info.namauser && !info.namauser.startsWith("__LOCK__")) {
-      const { points, ...rest } = info;
-      meta[seat] = rest;
+    // collect points from memory (they may be local)
+    const allPoints: any[] = [];
+    for (const [seat, info] of seatMap) {
+      for (const p of info.points) allPoints.push({ seat, ...p });
     }
-  }
 
-  safeSend(ws, ["allPointsList", newRoom, allPoints]);
-  safeSend(ws, ["allUpdateKursiList", newRoom, meta]);
-  broadcastRoomUserCount(newRoom);
+    safeSend(ws, ["allPointsList", newRoom, allPoints]);
+    safeSend(ws, ["allUpdateKursiList", newRoom, meta]);
+    broadcastRoomUserCount(newRoom);
+  } catch (err) {
+    // on error, still send local snapshot
+    const allPoints: any[] = [];
+    const meta: Record<number, Omit<SeatInfo, "points">> = {};
+    const seatMap = roomSeats.get(newRoom)!;
+    for (const [seat, info] of seatMap) {
+      for (const p of info.points) allPoints.push({ seat, ...p });
+      if (info.namauser && !info.namauser.startsWith("__LOCK__")) {
+        const { points, ...rest } = info;
+        meta[seat] = rest;
+      }
+    }
+    safeSend(ws, ["allPointsList", newRoom, allPoints]);
+    safeSend(ws, ["allUpdateKursiList", newRoom, meta]);
+    broadcastRoomUserCount(newRoom);
+  }
 }
 
 function handleChat(ws: WebSocketWithRoom, roomname: RoomName, noImageURL: string, username: string, message: string, usernameColor: string, chatTextColor: string) {
@@ -327,22 +407,24 @@ function handleUpdatePoint(ws: WebSocketWithRoom, room: RoomName, seat: number, 
   if (!roomBuffer.has(seat)) roomBuffer.set(seat, []);
   roomBuffer.get(seat)!.push({ x, y, fast });
 
-  // Publish point ke KV (ephemeral) untuk region lain
-  kvSetTemp(["point", room, seat, Date.now()], { x, y, fast, _origin: serverId }, TTL.point).catch(() => {});
+  // Publish to KV so other regions receive immediate update
+  kvSetTemp(["point", room, seat, Date.now(), crypto.randomUUID?.() ?? Math.random()], { x, y, fast, _origin: serverId }, TTL.point).catch(() => {});
 }
 
-async function handleRemoveKursi(ws: WebSocketWithRoom, room: RoomName, seat: number) {
+async function handleRemoveKursiAndPoint(ws: WebSocketWithRoom, room: RoomName, seat: number) {
   try { assertValidRoom(room); } catch { return safeSend(ws, ["error", `Unknown room: ${room}`]); }
 
-  // Hapus lokal
+  // reset local seat
   resetSeat(roomSeats.get(room)!.get(seat)!);
   for (const c of clients) c.numkursi?.delete(seat);
-  // Broadcast lokal
+  // broadcast local
   broadcastToRoom(room, ["removeKursi", room, seat]);
   broadcastRoomUserCount(room);
 
-  // Hapus global di KV (agar hilang di semua region)
-  kvDelete(["seat", room, seat]).catch(() => {});
+  // delete from KV (global)
+  await kvDelete(["seat", room, seat]).catch(() => {});
+  // also remove any lock
+  await kvDelete(["lock", room, seat]).catch(() => {});
 }
 
 function handleUpdateKursi(ws: WebSocketWithRoom, room: RoomName, seat: number, noimageUrl: string, namauser: string, color: string, itembawah: number, itematas: number, vip: boolean, viptanda: number) {
@@ -354,7 +436,7 @@ function handleUpdateKursi(ws: WebSocketWithRoom, room: RoomName, seat: number, 
   roomSeats.get(room)!.set(seat, seatInfo);
   broadcastRoomUserCount(room);
 
-  // Simpan ke KV untuk disebar lintas region
+  // Simpan ke KV untuk disebar lintas region (sertakan origin supaya watcher di server asal skip)
   kvSetTemp(["seat", room, seat], { ...seatInfo, _origin: serverId }, TTL.seat).catch(() => {});
 }
 
@@ -388,11 +470,11 @@ function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
       case "setIdTarget": handleSetIdTarget(ws, ...args); break;
       case "ping": handlePing(ws, ...args); break;
       case "getAllRoomsUserCount": handleGetAllRoomsUserCount(ws); break;
-      case "getCurrentNumber": safeSend(ws, ["currentNumber", currentNumber]); break;
-      case "joinRoom": handleJoinRoom(ws, ...args); break;
+      case "getCurrentNumber": handleGetCurrentNumber(ws); break;
+      case "joinRoom": void handleJoinRoom(ws, ...args); break;
       case "chat": handleChat(ws, ...args); break;
       case "updatePoint": handleUpdatePoint(ws, ...args); break;
-      case "removeKursiAndPoint": handleRemoveKursi(ws, ...args); break;
+      case "removeKursiAndPoint": void handleRemoveKursiAndPoint(ws, ...args); break;
       case "updateKursi": handleUpdateKursi(ws, ...args); break;
       case "sendnotif": handleSendNotif(ws, ...args); break;
       case "private": handlePrivate(ws, ...args); break;
@@ -424,8 +506,9 @@ serve((req) => {
           for (const seat of ws.numkursi) {
             resetSeat(seatMap.get(seat)!);
             broadcastToRoom(ws.roomname, ["removeKursi", ws.roomname, seat]);
-            // pastikan hapus global
+            // ensure global deletion
             kvDelete(["seat", ws.roomname, seat]).catch(() => {});
+            kvDelete(["lock", ws.roomname, seat]).catch(() => {});
           }
           broadcastRoomUserCount(ws.roomname);
         }
@@ -447,8 +530,9 @@ serve((req) => {
 });
 
 // ===== KV Watchers (sinkron lintas region) =====
+// Watch seat, point, chat, private, online
 
-// Kursi: update & remove
+// Seat watcher: update & delete
 (async () => {
   for await (const ev of kv.watch([["seat"]])) {
     for (const entry of ev) {
@@ -460,18 +544,20 @@ serve((req) => {
       if (!room || typeof seat !== "number") continue;
 
       if (val) {
-        // skip siaran jika event berasal dari server ini (hindari duplikat)
+        // skip if origin is this server (we already broadcasted locally)
         if (val._origin && val._origin === serverId) continue;
 
         // update memory + broadcast
         const { _origin, points, ...rest } = val;
-        const seatInfo: SeatInfo = { points: [], ...createEmptySeat(), ...(rest as Omit<SeatInfo, "points">) };
+        const seatInfo: SeatInfo = { points: points ?? [], ...createEmptySeat(), ...(rest as Omit<SeatInfo, "points">) };
         roomSeats.get(room)!.set(seat, seatInfo);
         broadcastToRoom(room, ["kursiBatchUpdate", room, [[seat, rest]]]);
         broadcastRoomUserCount(room);
       } else {
-        // deletion (tidak ada origin), tetap broadcast
-        resetSeat(roomSeats.get(room)!.get(seat)!);
+        // deletion event (key removed) - broadcast removal
+        const seatMap = roomSeats.get(room)!;
+        const info = seatMap.get(seat);
+        if (info) resetSeat(info);
         broadcastToRoom(room, ["removeKursi", room, seat]);
         broadcastRoomUserCount(room);
       }
@@ -479,7 +565,7 @@ serve((req) => {
   }
 })();
 
-// Point: siarkan gerakan
+// Point watcher: siarkan gerakan dari region lain
 (async () => {
   for await (const ev of kv.watch([["point"]])) {
     for (const entry of ev) {
@@ -495,7 +581,7 @@ serve((req) => {
   }
 })();
 
-// Chat publik
+// Chat watcher: publish messages from other regions
 (async () => {
   for await (const ev of kv.watch([["chat"]])) {
     for (const entry of ev) {
@@ -510,7 +596,7 @@ serve((req) => {
   }
 })();
 
-// Private message
+// Private message watcher: forward to local client if connected
 (async () => {
   for await (const ev of kv.watch([["private"]])) {
     for (const entry of ev) {
@@ -524,3 +610,24 @@ serve((req) => {
     }
   }
 })();
+
+// Online watcher is optional — mostly we set online flag from pings/interval
+// but we can watch "online" prefix to update local representation if needed.
+(async () => {
+  for await (const ev of kv.watch([["online"]])) {
+    for (const entry of ev) {
+      // we don't need to rebroadcast online to clients here because
+      // isUserOnline reads local clients quickly; but this watcher ensures cross-server awareness if desired.
+      // left intentionally minimal to avoid chattiness.
+    }
+  }
+})();
+
+// ===== Periodic KV refresh for online flags (keep-alive) =====
+setInterval(() => {
+  for (const c of clients) {
+    if (c.idtarget) kvSetTemp(["online", c.idtarget], { online: true, _origin: serverId }, TTL.online).catch(() => {});
+  }
+}, 10_000);
+
+// ===== End of file =====
