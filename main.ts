@@ -177,7 +177,7 @@ setInterval(async () => {
 // KV WATCH (REALTIME SYNC)
 // =====================
 (async () => {
-  const roomsIter = kv.watch({ prefix: ["room"] });
+  const roomsIter = kv.watch([["room"]]);
   for await (const entries of roomsIter) {
     for (const e of entries) {
       if (e.value) {
@@ -192,7 +192,7 @@ setInterval(async () => {
 })();
 
 (async () => {
-  const pointsIter = kv.watch({ prefix: ["point"] });
+  const pointsIter = kv.watch([["point"]]);
   for await (const entries of pointsIter) {
     for (const e of entries) {
       if (e.value) {
@@ -204,7 +204,7 @@ setInterval(async () => {
 })();
 
 (async () => {
-  const chatsIter = kv.watch({ prefix: ["chat"] });
+  const chatsIter = kv.watch([["chat"]]);
   for await (const entries of chatsIter) {
     for (const e of entries) {
       if (e.value) {
@@ -216,7 +216,7 @@ setInterval(async () => {
 })();
 
 (async () => {
-  const privIter = kv.watch({ prefix: ["private"] });
+  const privIter = kv.watch([["private"]]);
   for await (const entries of privIter) {
     for (const e of entries) {
       if (e.value) {
@@ -234,7 +234,7 @@ setInterval(async () => {
 })();
 
 (async () => {
-  const notifIter = kv.watch({ prefix: ["notif"] });
+  const notifIter = kv.watch([["notif"]]);
   for await (const entries of notifIter) {
     for (const e of entries) {
       if (e.value) {
