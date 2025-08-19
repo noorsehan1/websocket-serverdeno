@@ -1,6 +1,8 @@
-import { openKv } from "https://deno.land/x/kv/mod.ts";
+import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
-const kv = await openKv();
+// ====== Init KV ======
+const kv = await Deno.openKv();
+
 
 // Update kursi (selalu overwrite, tidak hilang)
 async function updateSeat(room: string, seat: number, data: any) {
