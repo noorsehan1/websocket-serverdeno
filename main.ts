@@ -1,317 +1,296 @@
+// deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
-// ======================= KV INIT =======================
-const kv = await Deno.openKv();
-
-// =================== Constants & Types =================
+// ====== Konstanta & Tipe ======
 const roomList = [
-  "Chill Zone",
-  "Catch Up",
-  "Casual Vibes",
-  "Lounge Talk",
-  "Easy Talk",
-  "Friendly Corner",
-  "The Hangout",
-  "Relax & Chat",
-  "Just Chillin",
-  "The Chatter Room"
+  "Chill Zone", "Catch Up", "Casual Vibes", "Lounge Talk", "Easy Talk",
+  "Friendly Corner", "The Hangout", "Vibe Spot", "Talk Hub", "Relaxed Chat"
 ] as const;
 
 type RoomName = typeof roomList[number];
-const allRooms = new Set<RoomName>(roomList);
-const MAX_SEATS = 35;
-const clients = new Set<WebSocketWithRoom>();
+const MAX_SEATS = 50;
 
 interface SeatInfo {
   noimageUrl: string;
   namauser: string;
   color: string;
-  itembawah: number;
-  itematas: number;
-  vip: boolean;
-  viptanda: number;
-  points: Array<{ x: number; y: number; fast: number }>;
+  itembawah: string;
+  itematas: string;
+  vip: string;
+  viptanda: string;
+  points: number;
   lockTime?: number;
 }
 
 interface WebSocketWithRoom extends WebSocket {
-  roomname?: RoomName;
-  idtarget?: string;
-  numkursi?: Set<number>;
+  room?: RoomName;
+  userId?: string;
+  targetId?: string;
 }
 
-// ================ KV Key Helpers (Consistent) =================
-const keySeat        = (room: RoomName, seat: number) => ["room", room, "seat", seat] as const;
-const keySeatPoint   = (room: RoomName, seat: number) => ["room", room, "seat", seat, "lastPoint"] as const;
-const keyUserToSeat  = (id: string)                  => ["userToSeat", id] as const; 
-const keyChatRoom    = (room: RoomName)              => ["room", room, "chat"] as const; 
-const keyPrivate     = (id: string)                  => ["private", id] as const; 
-const keyNotif       = (id: string)                  => ["notif", id] as const; 
+const clients = new Set<WebSocketWithRoom>();
+const userToSeat = new Map<string, { room: RoomName; seat: number }>();
+const roomSeats = new Map<RoomName, Map<number, SeatInfo>>();
 
-// ================= Utilities =================
+// ====== Utilitas ======
 function createEmptySeat(): SeatInfo {
-  return { noimageUrl: "", namauser: "", color: "", itembawah: 0, itematas: 0, vip: false, viptanda: 0, points: [] };
+  return {
+    noimageUrl: "", namauser: "", color: "",
+    itembawah: "", itematas: "",
+    vip: "", viptanda: "", points: 0
+  };
 }
 
-function resetSeat(info: SeatInfo) {
-  Object.assign(info, createEmptySeat());
+function resetSeat(room: RoomName, seat: number) {
+  roomSeats.get(room)?.set(seat, createEmptySeat());
 }
 
-function safeSend(ws: WebSocketWithRoom, msg: any) {
+function safeSend(ws: WebSocket, data: any) {
   try {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
-    } else {
-      clients.delete(ws);
+      ws.send(JSON.stringify(data));
     }
   } catch {
-    try { ws.close(); } catch {}
-    clients.delete(ws);
+    clients.delete(ws as WebSocketWithRoom);
   }
 }
 
-function assertValidRoom(room: any): room is RoomName {
-  if (!allRooms.has(room)) throw new Error("Unknown room: " + room);
-  return true;
+function assertValidRoom(room: string): asserts room is RoomName {
+  if (!roomList.includes(room as RoomName)) throw new Error("Invalid room");
 }
 
 function broadcastToRoom(room: RoomName, msg: any) {
-  for (const c of [...clients]) {
-    if (c.roomname === room) safeSend(c, msg);
+  for (const client of [...clients]) {
+    if (client.room === room) safeSend(client, msg);
   }
 }
 
-// ================== KV Wrappers ==================
-async function kvGetSeat(room: RoomName, seat: number): Promise<SeatInfo | null> {
-  const r = await kv.get<SeatInfo>(keySeat(room, seat));
-  return r.value ?? null;
+function getJumlahRoom(room: RoomName) {
+  let count = 0;
+  for (const client of clients) if (client.room === room) count++;
+  return count;
 }
 
-async function kvSetSeat(room: RoomName, seat: number, info: SeatInfo) {
-  await kv.set(keySeat(room, seat), info);
-}
-
-async function kvDeleteSeat(room: RoomName, seat: number) {
-  await kv.delete(keySeat(room, seat));
-  await kv.delete(keySeatPoint(room, seat));
-}
-
-async function kvSetUserToSeat(id: string, data: { room: RoomName; seat: number } | null) {
-  if (data) await kv.set(keyUserToSeat(id), data);
-  else await kv.delete(keyUserToSeat(id));
-}
-
-async function kvGetUserToSeat(id: string): Promise<{ room: RoomName; seat: number } | null> {
-  const r = await kv.get<{ room: RoomName; seat: number }>(keyUserToSeat(id));
-  return r.value ?? null;
-}
-
-async function kvSetSeatPoint(room: RoomName, seat: number, p: { x: number; y: number; fast: number }) {
-  await kv.set(keySeatPoint(room, seat), p);
-}
-
-async function kvGetAllPoints(room: RoomName): Promise<Array<{ seat: number; x: number; y: number; fast: number }>> {
-  const out: Array<{ seat: number; x: number; y: number; fast: number }> = [];
-  for (let i = 1; i <= MAX_SEATS; i++) {
-    const r = await kv.get<{ x: number; y: number; fast: number }>(keySeatPoint(room, i));
-    if (r.value) out.push({ seat: i, ...r.value });
+function broadcastRoomUserCount() {
+  const counts = roomList.map(r => ({ room: r, jumlah: getJumlahRoom(r) }));
+  for (const client of [...clients]) {
+    safeSend(client, { type: "allRoomsUserCount", counts });
   }
-  return out;
 }
 
-async function kvGetAllActiveSeatsMeta(room: RoomName): Promise<Record<number, Omit<SeatInfo, "points">>> {
-  const meta: Record<number, Omit<SeatInfo, "points">> = {};
-  for (let i = 1; i <= MAX_SEATS; i++) {
-    const info = await kvGetSeat(room, i);
-    if (info && info.namauser && !info.namauser.startsWith("__LOCK__")) {
-      const { points, ...rest } = info;
-      meta[i] = rest;
-    }
-  }
-  return meta;
+function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
+  const counts = roomList.map(r => ({ room: r, jumlah: getJumlahRoom(r) }));
+  safeSend(ws, { type: "allRoomsUserCount", counts });
 }
 
-async function getJumlahRoom(): Promise<Record<RoomName, number>> {
-  const cnt = Object.fromEntries(roomList.map(r => [r, 0])) as Record<RoomName, number>;
-  for (const room of allRooms) {
-    let c = 0;
-    for (let i = 1; i <= MAX_SEATS; i++) {
-      const info = await kvGetSeat(room, i);
-      if (info && info.namauser && !info.namauser.startsWith("__LOCK__")) c++;
-    }
-    cnt[room] = c;
-  }
-  return cnt;
-}
-
-// ================= Buffers =================
-const pointUpdateBuffer: Map<RoomName, Map<number, Array<{ x: number; y: number; fast: number }>>> = new Map();
-const updateKursiBuffer: Map<RoomName, Map<number, SeatInfo>> = new Map();
-const chatMessageBuffer: Map<RoomName, Array<any>> = new Map();
-const privateMessageBuffer: Map<string, Array<any>> = new Map();
+// ====== Buffers ======
+const pointUpdateBuffer = new Map<string, number>();
+const updateKursiBuffer = new Map<string, any[]>();
+const chatMessageBuffer = new Map<string, any[]>();
+const privateMessageBuffer = new Map<string, any[]>();
 
 function flushPrivateMessageBuffer() {
-  for (const [idtarget, messages] of privateMessageBuffer) {
-    for (const c of clients) if (c.idtarget === idtarget) messages.forEach(msg => safeSend(c, msg));
-    messages.length = 0;
+  for (const [targetId, messages] of privateMessageBuffer) {
+    for (const client of clients) {
+      if (client.userId === targetId) {
+        for (const msg of messages) safeSend(client, msg);
+      }
+    }
   }
+  privateMessageBuffer.clear();
 }
 
 function flushChatBuffer() {
   for (const [room, messages] of chatMessageBuffer) {
-    messages.forEach(msg => broadcastToRoom(room, msg));
-    messages.length = 0;
+    for (const client of clients) {
+      if (client.room === room) {
+        for (const msg of messages) safeSend(client, msg);
+      }
+    }
   }
+  chatMessageBuffer.clear();
 }
 
 function flushPointUpdates() {
-  for (const [room, seatMap] of pointUpdateBuffer) {
-    for (const [seat, points] of seatMap) {
-      points.forEach(p => broadcastToRoom(room, ["pointUpdated", room, seat, p.x, p.y, p.fast]));
-      points.length = 0;
-    }
-  }
+  if (pointUpdateBuffer.size === 0) return;
+  const updates = [...pointUpdateBuffer.entries()].map(([key, points]) => {
+    const [room, seat] = key.split(":");
+    return { room, seat: Number(seat), points };
+  });
+  for (const client of clients) safeSend(client, { type: "pointUpdates", updates });
+  pointUpdateBuffer.clear();
 }
 
 function flushKursiUpdates() {
-  for (const [room, seatMap] of updateKursiBuffer) {
-    const updates: Array<[number, Omit<SeatInfo, "points">]> = [];
-    for (const [seat, info] of seatMap) {
-      const { points, ...rest } = info;
-      updates.push([seat, rest]);
-    }
-    if (updates.length > 0) {
-      broadcastToRoom(room, ["kursiBatchUpdate", room, updates]);
-      seatMap.clear();
+  for (const [room, updates] of updateKursiBuffer) {
+    for (const client of clients) {
+      if (client.room === room) safeSend(client, { type: "kursiUpdates", updates });
     }
   }
+  updateKursiBuffer.clear();
 }
 
-// ================ Current Number ================
-let currentNumber = 1;
-const maxNumber = 6;
-const intervalMillis = 15 * 60 * 1000;
+// ====== Interval & Locks ======
+let currentNumber = 0;
+const maxNumber = 100;
+const intervalMillis = 10 * 1000;
 
 setInterval(() => {
-  currentNumber = currentNumber < maxNumber ? currentNumber + 1 : 1;
-  for (const c of [...clients]) safeSend(c, ["currentNumber", currentNumber]);
+  currentNumber = (currentNumber % maxNumber) + 1;
+  for (const client of clients) safeSend(client, { type: "currentNumber", value: currentNumber });
 }, intervalMillis);
 
-// ================= Locks & Cleanup =================
-async function cleanExpiredLocks() {
+function cleanExpiredLocks() {
   const now = Date.now();
-  for (const room of allRooms) {
-    for (let seat = 1; seat <= MAX_SEATS; seat++) {
-      const info = await kvGetSeat(room, seat);
-      if (info && info.namauser.startsWith("__LOCK__") && info.lockTime && now - info.lockTime > 10000) {
-        await kvDeleteSeat(room, seat);
-        broadcastToRoom(room, ["removeKursi", room, seat]);
-        const allCounts = await getJumlahRoom();
-        broadcastToRoom(room, ["roomUserCount", room, allCounts[room]]);
+  for (const [room, seats] of roomSeats) {
+    for (const [seat, info] of seats) {
+      if (info.lockTime && now - info.lockTime > 10000) {
+        resetSeat(room, seat);
+        broadcastToRoom(room, { type: "kursiUpdate", seat, data: createEmptySeat() });
       }
     }
   }
 }
 
-async function lockSeat(room: RoomName, ws: WebSocketWithRoom): Promise<number | null> {
-  if (!ws.idtarget) return null;
-
-  const prev = await kvGetUserToSeat(ws.idtarget);
-  if (prev && prev.room === room) {
-    const info = await kvGetSeat(room, prev.seat);
-    if (!info || info.namauser === "") {
-      const lockInfo: SeatInfo = { ...createEmptySeat(), namauser: "__LOCK__" + ws.idtarget, lockTime: Date.now(), points: [] };
-      await kvSetSeat(room, prev.seat, lockInfo);
-      return prev.seat;
-    }
-  }
-
-  for (let i = 1; i <= MAX_SEATS; i++) {
-    const info = await kvGetSeat(room, i);
-    if (!info || info.namauser === "") {
-      const lockInfo: SeatInfo = { ...createEmptySeat(), namauser: "__LOCK__" + ws.idtarget, lockTime: Date.now(), points: [] };
-      await kvSetSeat(room, i, lockInfo);
-      return i;
-    }
-  }
-  return null;
+function lockSeat(room: RoomName, seat: number) {
+  roomSeats.get(room)?.get(seat)!.lockTime = Date.now();
 }
 
-function cleanupBuffers(ws: WebSocketWithRoom) {
-  if (ws.idtarget) {
-    privateMessageBuffer.delete(ws.idtarget);
-  }
+function cleanupBuffers() {
+  pointUpdateBuffer.clear();
+  updateKursiBuffer.clear();
+  chatMessageBuffer.clear();
+  privateMessageBuffer.clear();
 }
 
-// ================ Periodic Flush ================
 setInterval(() => {
-  try {
-    flushPointUpdates();
-    flushKursiUpdates();
-    flushChatBuffer();
-    flushPrivateMessageBuffer();
-    cleanExpiredLocks();
-  } catch (err) {
-    console.error("Error in periodic flush:", err);
-  }
+  flushPrivateMessageBuffer();
+  flushChatBuffer();
+  flushPointUpdates();
+  flushKursiUpdates();
+  cleanExpiredLocks();
 }, 100);
 
-// =================== Event Handlers ===================
-// (semua handler sama persis dengan versi kamu, tidak dihapus demi singkat)
+// ====== Event Handlers ======
+function handleSetIdTarget(ws: WebSocketWithRoom, msg: any) {
+  ws.userId = msg.userId;
+  ws.targetId = msg.targetId;
+}
 
-async function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
+function handlePing(ws: WebSocketWithRoom) {
+  safeSend(ws, { type: "pong" });
+}
+
+function handleJoinRoom(ws: WebSocketWithRoom, msg: any) {
   try {
-    const data = JSON.parse(dataStr);
-    if (!Array.isArray(data) || data.length === 0) return safeSend(ws, ["error", "Invalid message format"]);
-    const [evt, ...args] = data;
-    // switch-case handler (sama seperti kode kamu)
-  } catch (err) { 
-    console.error("Error handling message:", err, "raw:", dataStr); 
+    assertValidRoom(msg.room);
+    ws.room = msg.room;
+    ws.userId = msg.userId;
+
+    if (!roomSeats.has(msg.room)) {
+      const seats = new Map<number, SeatInfo>();
+      for (let i = 0; i < MAX_SEATS; i++) seats.set(i, createEmptySeat());
+      roomSeats.set(msg.room, seats);
+    }
+    const seats = [...(roomSeats.get(msg.room)?.entries() ?? [])];
+    safeSend(ws, { type: "initialState", seats });
+    broadcastRoomUserCount();
+  } catch {
+    safeSend(ws, { type: "error", message: "Invalid room" });
   }
 }
 
-// ================= Serve WebSocket =================
+function handleChat(ws: WebSocketWithRoom, msg: any) {
+  if (!ws.room) return;
+  const arr = chatMessageBuffer.get(ws.room) || [];
+  arr.push({ type: "chat", namauser: msg.namauser, text: msg.text });
+  chatMessageBuffer.set(ws.room, arr);
+}
+
+function handleUpdatePoint(msg: any) {
+  const key = `${msg.room}:${msg.seat}`;
+  pointUpdateBuffer.set(key, msg.points);
+  roomSeats.get(msg.room)?.get(msg.seat)!.points = msg.points;
+}
+
+function handleRemoveKursi(msg: any) {
+  assertValidRoom(msg.room);
+  resetSeat(msg.room, msg.seat);
+  broadcastToRoom(msg.room, { type: "kursiUpdate", seat: msg.seat, data: createEmptySeat() });
+}
+
+function handleUpdateKursi(msg: any) {
+  assertValidRoom(msg.room);
+  const seats = roomSeats.get(msg.room)!;
+  seats.set(msg.seat, msg.data);
+  lockSeat(msg.room, msg.seat);
+  const arr = updateKursiBuffer.get(msg.room) || [];
+  arr.push({ seat: msg.seat, data: msg.data });
+  updateKursiBuffer.set(msg.room, arr);
+}
+
+function handleSendNotif(msg: any) {
+  for (const client of clients) safeSend(client, { type: "notif", message: msg.message });
+}
+
+function handlePrivate(ws: WebSocketWithRoom, msg: any) {
+  if (!ws.userId || !ws.targetId) return;
+  const arr = privateMessageBuffer.get(ws.targetId) || [];
+  arr.push({ type: "private", from: ws.userId, text: msg.text });
+  privateMessageBuffer.set(ws.targetId, arr);
+}
+
+function handleIsUserOnline(ws: WebSocketWithRoom, msg: any) {
+  const isOnline = [...clients].some(c => c.userId === msg.userId);
+  safeSend(ws, { type: "isUserOnline", userId: msg.userId, online: isOnline });
+}
+
+// ====== WebSocket Server ======
 serve((req) => {
-  try {
-    const upgrade = req.headers.get("upgrade") || "";
-    if (upgrade.toLowerCase() !== "websocket") return new Response("Expected websocket", { status: 400 });
+  if (req.headers.get("upgrade") !== "websocket") return new Response("not websocket", { status: 400 });
+  const { socket, response } = Deno.upgradeWebSocket(req);
+  const ws = socket as WebSocketWithRoom;
 
-    const { socket, response } = Deno.upgradeWebSocket(req);
-    const ws = socket as WebSocketWithRoom;
-    clients.add(ws);
+  ws.onopen = () => clients.add(ws);
 
-    ws.onopen = () => { ws.numkursi = new Set<number>(); console.log("Client connected"); };
-    ws.onmessage = (ev) => { handleMessage(ws, ev.data); };
-    ws.onclose = async () => {
-      try {
-        console.log("❌ User disconnected:", ws.idtarget ?? "(unknown)");
-        if (ws.roomname && ws.numkursi) {
-          for (const seat of ws.numkursi) {
-            const info = await kvGetSeat(ws.roomname, seat);
-            if (info) {
-              if (info.namauser.startsWith("__LOCK__") || info.namauser) {
-                await kvDeleteSeat(ws.roomname, seat);
-                broadcastToRoom(ws.roomname, ["removeKursi", ws.roomname, seat]);
-              }
-            }
-          }
-          const allCounts = await getJumlahRoom();
-          broadcastToRoom(ws.roomname, ["roomUserCount", ws.roomname, allCounts[ws.roomname]]);
-        }
-        if (ws.idtarget) await kvSetUserToSeat(ws.idtarget, null);
-        cleanupBuffers(ws);
-      } catch (err) {
-        console.error("❗ Error on close:", err);
-      } finally {
-        clients.delete(ws);
-        ws.numkursi?.clear();
-        ws.roomname = undefined;
+  ws.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      switch (msg.type) {
+        case "setIdTarget": handleSetIdTarget(ws, msg); break;
+        case "ping": handlePing(ws); break;
+        case "getAllRoomsUserCount": handleGetAllRoomsUserCount(ws); break;
+        case "getCurrentNumber": safeSend(ws, { type: "currentNumber", value: currentNumber }); break;
+        case "joinRoom": handleJoinRoom(ws, msg); break;
+        case "chat": handleChat(ws, msg); break;
+        case "updatePoint": handleUpdatePoint(msg); break;
+        case "removeKursiAndPoint": handleRemoveKursi(msg); break;
+        case "updateKursi": handleUpdateKursi(msg); break;
+        case "sendnotif": handleSendNotif(msg); break;
+        case "private": handlePrivate(ws, msg); break;
+        case "isUserOnline": handleIsUserOnline(ws, msg); break;
+        default: console.warn("Unknown message type:", msg.type);
       }
-    };
+    } catch (err) {
+      console.error("Message error:", err);
+    }
+  };
 
-    return response;
-  } catch (err) {
-    console.error("WebSocket upgrade error:", err);
-    return new Response("Failed to upgrade websocket", { status: 500 });
-  }
+  ws.onclose = () => {
+    clients.delete(ws);
+    if (ws.room && ws.userId) {
+      for (const [seat, info] of roomSeats.get(ws.room) ?? []) {
+        if (info.namauser === ws.userId) {
+          resetSeat(ws.room, seat);
+          broadcastToRoom(ws.room, { type: "kursiUpdate", seat, data: createEmptySeat() });
+        }
+      }
+    }
+    broadcastRoomUserCount();
+    cleanupBuffers();
+  };
+
+  return response;
 });
+
+console.log("✅ WebSocket server running on :80");
