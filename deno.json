@@ -1,0 +1,6 @@
+{
+  "deploy": {
+    "project": "my-chat-app",
+    "region": "gcp-us-central1"
+  }
+}
