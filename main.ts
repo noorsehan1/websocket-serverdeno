@@ -290,10 +290,7 @@ async function handleChat(ws: WebSocketWithRoom, roomname: RoomName, noImageURL:
   // Overwrite ke KV (satu key per room)
   await kvSetChat(roomname, chatSnap);
 
-  // Broadcast lokal (watcher server lain akan rebroadcast untuk instance mereka)
-  if (!chatMessageBuffer.has(roomname)) chatMessageBuffer.set(roomname, []);
-  chatMessageBuffer.get(roomname)!.push(chatSnap);
-  broadcastToRoom(roomname, chatSnap);
+  
 }
 
 async function handleUpdatePoint(ws: WebSocketWithRoom, room: RoomName, seat: number, x: number, y: number, fast: number) {
