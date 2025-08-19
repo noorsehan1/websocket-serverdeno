@@ -1,11 +1,7 @@
-// deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
 
 // ======================= KV INIT =======================
-// Pastikan tambahkan env var DENO_KV_ACCESS_TOKEN di Deno Deploy
-const kv = await Deno.openKv(
-  "https://api.deno.com/databases/27ef7a70-74d4-4c69-970c-c5a185e12788/connect"
-);
+const kv = await Deno.openKv(); // default KV (tanpa token) — aman di Deno Deploy
 
 // =================== Constants & Types =================
 const roomList = [
@@ -44,13 +40,13 @@ interface WebSocketWithRoom extends WebSocket {
   numkursi?: Set<number>;
 }
 
-// ================ KV Key Helpers (konsisten) =================
+// ================ KV Key Helpers (konsisten dg versi KV kamu) =================
 const keySeat        = (room: RoomName, seat: number) => ["room", room, "seat", seat] as const;
 const keySeatPoint   = (room: RoomName, seat: number) => ["room", room, "seat", seat, "lastPoint"] as const;
-const keyUserToSeat  = (id: string)                  => ["userToSeat", id] as const;        // {room, seat}
-const keyChatRoom    = (room: RoomName)              => ["room", room, "chat"] as const;    // pesan terakhir (snapshot)
-const keyPrivate     = (id: string)                  => ["private", id] as const;           // pesan private terakhir (snapshot)
-const keyNotif       = (id: string)                  => ["notif", id] as const;             // notif terakhir (snapshot)
+const keyUserToSeat  = (id: string)                  => ["userToSeat", id] as const; // {room, seat}
+const keyChatRoom    = (room: RoomName)              => ["room", room, "chat"] as const; // snapshot chat terakhir
+const keyPrivate     = (id: string)                  => ["private", id] as const; // snapshot private terakhir
+const keyNotif       = (id: string)                  => ["notif", id] as const; // snapshot notif terakhir
 
 // ================= Utilities =================
 function createEmptySeat(): SeatInfo {
@@ -215,7 +211,7 @@ async function cleanExpiredLocks() {
       if (info && info.namauser.startsWith("__LOCK__") && info.lockTime && now - info.lockTime > 10000) {
         await kvDeleteSeat(room, seat);
         broadcastToRoom(room, ["removeKursi", room, seat]);
-        await broadcastRoomUserCount(room); // lock tidak dihitung user aktif
+        await broadcastRoomUserCount(room);
       }
     }
   }
@@ -224,7 +220,7 @@ async function cleanExpiredLocks() {
 async function lockSeat(room: RoomName, ws: WebSocketWithRoom): Promise<number | null> {
   if (!ws.idtarget) return null;
 
-  // Reuse kursi sebelumnya jika masih kosong
+  // Jika user pernah punya seat, coba reuse bila kosong secara fisik.
   const prev = await kvGetUserToSeat(ws.idtarget);
   if (prev && prev.room === room) {
     const info = await kvGetSeat(room, prev.seat);
@@ -235,7 +231,6 @@ async function lockSeat(room: RoomName, ws: WebSocketWithRoom): Promise<number |
     }
   }
 
-  // Cari kursi kosong
   for (let i = 1; i <= MAX_SEATS; i++) {
     const info = await kvGetSeat(room, i);
     if (!info || info.namauser === "") {
@@ -305,6 +300,7 @@ async function handleJoinRoom(ws: WebSocketWithRoom, newRoom: RoomName) {
   const meta = await kvGetAllActiveSeatsMeta(newRoom);
   safeSend(ws, ["allUpdateKursiList", newRoom, meta]);
 
+  // Broadcast jumlah user terbaru
   await broadcastRoomUserCount(newRoom);
 }
 
@@ -312,7 +308,7 @@ async function handleChat(ws: WebSocketWithRoom, roomname: RoomName, noImageURL:
   try { assertValidRoom(roomname); } catch { return safeSend(ws, ["error", "Invalid room for chat"]); }
 
   const chatSnap = ["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor] as const;
-  await kv.set(keyChatRoom(roomname), chatSnap); // snapshot terakhir
+  await kv.set(keyChatRoom(roomname), chatSnap); // snapshot
   if (!chatMessageBuffer.has(roomname)) chatMessageBuffer.set(roomname, []);
   chatMessageBuffer.get(roomname)!.push(chatSnap);
 }
@@ -321,10 +317,8 @@ async function handleUpdatePoint(ws: WebSocketWithRoom, room: RoomName, seat: nu
   try { assertValidRoom(room); } catch { return safeSend(ws, ["error", `Unknown room: ${room}`]); }
   if (typeof x !== "number" || typeof y !== "number" || typeof fast !== "number") return;
 
-  // Simpan snapshot point terakhir ke KV (overwrite)
   await kvSetSeatPoint(room, seat, { x, y, fast });
 
-  // Buffer broadcast realtime
   if (!pointUpdateBuffer.has(room)) pointUpdateBuffer.set(room, new Map());
   const roomBuffer = pointUpdateBuffer.get(room)!;
   if (!roomBuffer.has(seat)) roomBuffer.set(seat, []);
@@ -345,9 +339,8 @@ async function handleUpdateKursi(ws: WebSocketWithRoom, room: RoomName, seat: nu
   try { assertValidRoom(room); } catch { return safeSend(ws, ["error", `Unknown room: ${room}`]); }
 
   const seatInfo: SeatInfo = { noimageUrl, namauser, color, itembawah, itematas, vip, viptanda, points: [] };
-  await kvSetSeat(room, seat, seatInfo); // overwrite snapshot kursi
+  await kvSetSeat(room, seat, seatInfo);
 
-  // Buffer kursi untuk batch broadcast ringan
   if (!updateKursiBuffer.has(room)) updateKursiBuffer.set(room, new Map());
   updateKursiBuffer.get(room)!.set(seat, seatInfo);
 
@@ -356,15 +349,17 @@ async function handleUpdateKursi(ws: WebSocketWithRoom, room: RoomName, seat: nu
 
 async function handleSendNotif(ws: WebSocketWithRoom, idtarget: string, noimageUrl: string, username: string, deskripsi: string) {
   const notifData = ["notif", noimageUrl, username, deskripsi, Date.now()];
-  await kv.set(keyNotif(idtarget), notifData); // snapshot terakhir
+  await kv.set(keyNotif(idtarget), notifData); // snapshot
   for (const c of [...clients]) if (c.idtarget === idtarget) safeSend(c, notifData);
 }
 
 async function handlePrivate(ws: WebSocketWithRoom, idt: string, url: string, msg: string, sender: string) {
   const ts = Date.now();
   const out = ["private", idt, url, msg, ts, sender];
-  await kv.set(keyPrivate(idt), out); // snapshot terakhir
+  await kv.set(keyPrivate(idt), out); // snapshot
+  // kirim balik ke pengirim
   safeSend(ws, out);
+  // buffer utk target online di instance ini
   if (!privateMessageBuffer.has(idt)) privateMessageBuffer.set(idt, []);
   privateMessageBuffer.get(idt)!.push(out);
 }
@@ -406,6 +401,76 @@ async function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
   }
 }
 
+// ===================== KV WATCH (sync antar server) =====================
+// Perubahan di KV (oleh instance manapun) akan dibroadcast ke client instance ini.
+(async () => {
+  // Awasi prefix kursi, point, chat, private, notif
+  const watcher = kv.watch([
+    ["room"],           // semua hal di bawah "room" (kursi, point, chat)
+    ["private"],        // private snapshot
+    ["notif"],          // notif snapshot
+  ]);
+
+  for await (const events of watcher) {
+    for (const e of events) {
+      const key0 = e.key[0] as string;
+
+      // room/*/chat
+      if (key0 === "room" && e.key[2] === "chat" && e.value) {
+        const room = e.key[1] as RoomName;
+        const chatMsg = e.value;
+        broadcastToRoom(room, chatMsg);
+        continue;
+      }
+
+      // room/*/seat/<n>  (kursi berubah)
+      if (key0 === "room" && e.key[2] === "seat" && typeof e.key[3] === "number") {
+        const room = e.key[1] as RoomName;
+        const seat = e.key[3] as number;
+        if (e.value) {
+          const seatInfo = e.value as SeatInfo;
+          const { points, ...rest } = seatInfo;
+          // batch via kursiBatchUpdate untuk konsistensi UI kamu
+          if (!updateKursiBuffer.has(room)) updateKursiBuffer.set(room, new Map());
+          updateKursiBuffer.get(room)!.set(seat, seatInfo);
+        } else {
+          broadcastToRoom(room, ["removeKursi", room, seat]);
+        }
+        // hitung ulang count
+        await broadcastRoomUserCount(room);
+        continue;
+      }
+
+      // room/*/seat/<n>/lastPoint  (point update)
+      if (key0 === "room" && e.key[2] === "seat" && e.key[4] === "lastPoint" && e.value) {
+        const room = e.key[1] as RoomName;
+        const seat = e.key[3] as number;
+        const p = e.value as { x: number; y: number; fast: number };
+        broadcastToRoom(room, ["pointUpdated", room, seat, p.x, p.y, p.fast]);
+        continue;
+      }
+
+      // private/<idtarget>
+      if (key0 === "private" && e.value) {
+        const out = e.value as any;
+        const idt = out[1] as string;
+        for (const c of [...clients]) if (c.idtarget === idt) safeSend(c, out);
+        continue;
+      }
+
+      // notif/<idtarget>
+      if (key0 === "notif" && e.value) {
+        const notif = e.value as any;
+        const idt = notif[1] as string | undefined; // format kita: ["notif", noimageUrl, username, deskripsi, ts]
+        // Karena kita tak simpan id target dalam payload, gunakan e.key[1]
+        const targetId = e.key[1] as string;
+        for (const c of [...clients]) if (c.idtarget === targetId) safeSend(c, notif);
+        continue;
+      }
+    }
+  }
+})();
+
 // ================= Serve WebSocket =================
 serve((req) => {
   try {
@@ -422,8 +487,8 @@ serve((req) => {
       try {
         console.log("❌ User disconnected:", ws.idtarget ?? "(unknown)");
         if (ws.roomname && ws.numkursi) {
-          const seatMap = ws.numkursi;
-          for (const seat of seatMap) {
+          const seatNums = [...ws.numkursi];
+          for (const seat of seatNums) {
             const info = await kvGetSeat(ws.roomname, seat);
             if (info) {
               if (info.namauser.startsWith("__LOCK__") || info.namauser) {
