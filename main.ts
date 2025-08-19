@@ -454,25 +454,31 @@ serve((req) => {
     };
     ws.onmessage = (ev) => handleMessage(ws, ev.data);
     ws.onclose = () => {
-      try {
-        if (ws.roomname && ws.numkursi) {
-          const seatMap = roomSeats.get(ws.roomname)!;
-          for (const seat of ws.numkursi) {
-            resetSeat(seatMap.get(seat)!);
-            saveSeatToKv(ws.roomname, seat, seatMap.get(seat)!);
-            broadcastToRoom(ws.roomname, ["removeKursi", ws.roomname, seat]);
-          }
-          broadcastRoomUserCount(ws.roomname);
-        }
-        cleanupBuffers(ws);
-      } catch (err) {
-        console.error("Error on close:", err);
-      } finally {
-        clients.delete(ws);
-        ws.numkursi?.clear();
-        ws.roomname = undefined;
+  try {
+    if (ws.roomname && ws.numkursi) {
+      const seatMap = roomSeats.get(ws.roomname)!;
+      for (const seat of ws.numkursi) {
+        resetSeat(seatMap.get(seat)!);
+        saveSeatToKv(ws.roomname, seat, seatMap.get(seat)!); // overwrite kosong
+        broadcastToRoom(ws.roomname, ["removeKursi", ws.roomname, seat]);
       }
-    };
+      broadcastRoomUserCount(ws.roomname);
+    }
+
+    // 🆕 bersihkan mapping & buffer langsung
+    if (ws.idtarget) {
+      userToSeat.delete(ws.idtarget);
+      privateMessageBuffer.delete(ws.idtarget);
+    }
+  } catch (err) {
+    console.error("Error on close:", err);
+  } finally {
+    clients.delete(ws);
+    ws.numkursi?.clear();
+    ws.roomname = undefined;
+  }
+};
+
 
     return response;
   } catch (err) {
