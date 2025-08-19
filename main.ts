@@ -11,7 +11,7 @@ const roomList = [
   "The Hangout",
   "Relax & Chat",
   "Just Chillin",
-  "The Chatter Room"
+  "The Chatter Room",
 ] as const;
 
 type RoomName = typeof roomList[number];
@@ -20,7 +20,7 @@ const allRooms = new Set<RoomName>(roomList);
 const MAX_SEATS = 35;
 const clients = new Set<WebSocketWithRoom>();
 
-// ===== KV Store =====
+// ===== KV Store (overwrite only) =====
 const kv = await Deno.openKv();
 
 interface SeatInfo {
@@ -44,19 +44,27 @@ interface WebSocketWithRoom extends WebSocket {
 const userToSeat: Map<string, { room: RoomName; seat: number }> = new Map();
 const roomSeats: Map<RoomName, Map<number, SeatInfo>> = new Map();
 
-// ===== Initialize Seats =====
+// ===== Initialize Local Cache (tanpa read KV) =====
 for (const room of allRooms) {
   const seatMap = new Map<number, SeatInfo>();
   for (let i = 1; i <= MAX_SEATS; i++) {
     seatMap.set(i, createEmptySeat());
   }
   roomSeats.set(room, seatMap);
-  await loadSeatsFromKv(room); // sync kursi dari KV saat start
 }
 
 // ===== Utilities =====
 function createEmptySeat(): SeatInfo {
-  return { noimageUrl: "", namauser: "", color: "", itembawah: 0, itematas: 0, vip: false, viptanda: 0, points: [] };
+  return {
+    noimageUrl: "",
+    namauser: "",
+    color: "",
+    itembawah: 0,
+    itematas: 0,
+    vip: false,
+    viptanda: 0,
+    points: [],
+  };
 }
 
 function resetSeat(info: SeatInfo) {
@@ -68,11 +76,9 @@ function safeSend(ws: WebSocketWithRoom, msg: any) {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg));
     } else {
-      console.warn("⚠️ Skip send, socket not open:", ws.idtarget);
       clients.delete(ws);
     }
-  } catch (err) {
-    console.error("❌ Failed sending message to", ws.idtarget, ":", err);
+  } catch {
     try { ws.close(); } catch {}
     clients.delete(ws);
   }
@@ -90,7 +96,7 @@ function broadcastToRoom(room: RoomName, msg: any) {
 }
 
 function getJumlahRoom(): Record<RoomName, number> {
-  const cnt = Object.fromEntries(roomList.map(r => [r, 0])) as Record<RoomName, number>;
+  const cnt = Object.fromEntries(roomList.map((r) => [r, 0])) as Record<RoomName, number>;
   for (const room of allRooms) {
     const seatMap = roomSeats.get(room)!;
     for (const info of seatMap.values()) {
@@ -107,7 +113,7 @@ function broadcastRoomUserCount(room: RoomName) {
 
 function handleGetAllRoomsUserCount(ws: WebSocketWithRoom) {
   const allCounts = getJumlahRoom();
-  const result: Array<[RoomName, number]> = roomList.map(room => [room, allCounts[room]]);
+  const result: Array<[RoomName, number]> = roomList.map((room) => [room, allCounts[room]]);
   safeSend(ws, ["allRoomsUserCount", result]);
 }
 
@@ -119,14 +125,14 @@ const privateMessageBuffer: Map<string, Array<any>> = new Map();
 
 function flushPrivateMessageBuffer() {
   for (const [idtarget, messages] of privateMessageBuffer) {
-    for (const c of clients) if (c.idtarget === idtarget) messages.forEach(msg => safeSend(c, msg));
+    for (const c of clients) if (c.idtarget === idtarget) messages.forEach((msg) => safeSend(c, msg));
     messages.length = 0;
   }
 }
 
 function flushChatBuffer() {
   for (const [room, messages] of chatMessageBuffer) {
-    messages.forEach(msg => broadcastToRoom(room, msg));
+    messages.forEach((msg) => broadcastToRoom(room, msg));
     messages.length = 0;
   }
 }
@@ -134,7 +140,7 @@ function flushChatBuffer() {
 function flushPointUpdates() {
   for (const [room, seatMap] of pointUpdateBuffer) {
     for (const [seat, points] of seatMap) {
-      points.forEach(p => broadcastToRoom(room, ["pointUpdated", room, seat, p.x, p.y, p.fast]));
+      points.forEach((p) => broadcastToRoom(room, ["pointUpdated", room, seat, p.x, p.y, p.fast]));
       points.length = 0;
     }
   }
@@ -154,33 +160,21 @@ function flushKursiUpdates() {
   }
 }
 
-// ===== KV Sync Helpers =====
+// ===== KV Sync Helpers (overwrite only) =====
 async function saveSeatToKv(room: RoomName, seat: number, info: SeatInfo) {
   await kv.set(["seat", room, seat], info);
 }
-
-async function loadSeatsFromKv(room: RoomName) {
-  for (let i = 1; i <= MAX_SEATS; i++) {
-    const val = await kv.get<SeatInfo>(["seat", room, i]);
-    if (val.value) {
-      roomSeats.get(room)!.set(i, val.value);
-    }
-  }
-}
-
 async function saveChatToKv(room: RoomName, data: any) {
   await kv.set(["chat", room], data);
 }
-
 async function savePrivateToKv(idtarget: string, data: any) {
   await kv.set(["private", idtarget], data);
 }
-
 async function saveNotifToKv(idtarget: string, data: any) {
   await kv.set(["notif", idtarget], data);
 }
 
-// ===== Current Number =====
+// ===== Background Jobs =====
 let currentNumber = 1;
 const maxNumber = 6;
 const intervalMillis = 15 * 60 * 1000;
@@ -190,13 +184,13 @@ setInterval(() => {
   for (const c of [...clients]) safeSend(c, ["currentNumber", currentNumber]);
 }, intervalMillis);
 
-// ===== Locks =====
+// clean kursi lock > 10s
 function cleanExpiredLocks() {
   const now = Date.now();
   for (const room of allRooms) {
     const seatMap = roomSeats.get(room)!;
     for (const [seat, info] of seatMap) {
-      if (info.namauser.startsWith("__LOCK__") && info.lockTime && now - info.lockTime > 10000) {
+      if (info.namauser.startsWith("__LOCK__") && info.lockTime && now - info.lockTime > 10_000) {
         resetSeat(info);
         saveSeatToKv(room, seat, info);
         broadcastToRoom(room, ["removeKursi", room, seat]);
@@ -211,11 +205,7 @@ function lockSeat(room: RoomName, ws: WebSocketWithRoom): number | null {
   const seatMap = roomSeats.get(room)!;
   if (!ws.idtarget) return null;
 
-  if (userToSeat.has(ws.idtarget)) {
-    const prev = userToSeat.get(ws.idtarget)!;
-    if (prev.room === room && seatMap.get(prev.seat)!.namauser === "") return prev.seat;
-  }
-
+  // pilih kursi kosong pertama
   for (let i = 1; i <= MAX_SEATS; i++) {
     const kursi = seatMap.get(i)!;
     if (kursi.namauser === "") {
@@ -234,7 +224,7 @@ function cleanupBuffers(ws: WebSocketWithRoom) {
   }
 }
 
-// ===== Periodic Flush =====
+// ===== Periodic Flush (100ms) =====
 setInterval(() => {
   try {
     flushPointUpdates();
@@ -247,7 +237,7 @@ setInterval(() => {
   }
 }, 100);
 
-// ===== Event Handlers =====
+// ===== Handlers =====
 function handleSetIdTarget(ws: WebSocketWithRoom, id: string) {
   ws.idtarget = id;
   safeSend(ws, ["setIdTargetAck", ws.idtarget]);
@@ -257,46 +247,20 @@ function handlePing(ws: WebSocketWithRoom, pingId: string) {
   if (pingId && ws.idtarget === pingId) safeSend(ws, ["pong"]);
 }
 
-function handleJoinRoom(ws: WebSocketWithRoom, newRoom: RoomName) {
-  try { assertValidRoom(newRoom); } catch { return safeSend(ws, ["error", `Unknown room: ${newRoom}`]); }
-
-  const foundSeat = lockSeat(newRoom, ws);
-  if (foundSeat === null) return safeSend(ws, ["roomFull", newRoom]);
-
-  if (ws.roomname && ws.numkursi) {
-    const oldRoom = ws.roomname;
-    for (const s of ws.numkursi) {
-      resetSeat(roomSeats.get(oldRoom)!.get(s)!);
-      saveSeatToKv(oldRoom, s, roomSeats.get(oldRoom)!.get(s)!);
-      broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
-    }
-    broadcastRoomUserCount(oldRoom);
+function handleChat(
+  ws: WebSocketWithRoom,
+  roomname: RoomName,
+  noImageURL: string,
+  username: string,
+  message: string,
+  usernameColor: string,
+  chatTextColor: string,
+) {
+  try {
+    assertValidRoom(roomname);
+  } catch {
+    return safeSend(ws, ["error", "Invalid room for chat"]);
   }
-
-  ws.roomname = newRoom;
-  ws.numkursi = new Set([foundSeat]);
-  safeSend(ws, ["numberKursiSaya", foundSeat]);
-  if (ws.idtarget) userToSeat.set(ws.idtarget, { room: newRoom, seat: foundSeat });
-
-  const allPoints: any[] = [];
-  const meta: Record<number, Omit<SeatInfo, "points">> = {};
-  const seatMap = roomSeats.get(newRoom)!;
-  for (const [seat, info] of seatMap) {
-    for (const p of info.points) allPoints.push({ seat, ...p });
-    if (info.namauser && !info.namauser.startsWith("__LOCK__")) {
-      const { points, ...rest } = info;
-      meta[seat] = rest;
-    }
-  }
-
-  safeSend(ws, ["allPointsList", newRoom, allPoints]);
-  safeSend(ws, ["allUpdateKursiList", newRoom, meta]);
-  broadcastRoomUserCount(newRoom);
-}
-
-function handleChat(ws: WebSocketWithRoom, roomname: RoomName, noImageURL: string, username: string, message: string, usernameColor: string, chatTextColor: string) {
-  try { assertValidRoom(roomname); } catch { return safeSend(ws, ["error", "Invalid room for chat"]); }
-
   if (!chatMessageBuffer.has(roomname)) chatMessageBuffer.set(roomname, []);
   const msg = ["chat", roomname, noImageURL, username, message, usernameColor, chatTextColor];
   chatMessageBuffer.get(roomname)!.push(msg);
@@ -304,7 +268,11 @@ function handleChat(ws: WebSocketWithRoom, roomname: RoomName, noImageURL: strin
 }
 
 function handleUpdatePoint(ws: WebSocketWithRoom, room: RoomName, seat: number, x: number, y: number, fast: number) {
-  try { assertValidRoom(room); } catch { return safeSend(ws, ["error", `Unknown room: ${room}`]); }
+  try {
+    assertValidRoom(room);
+  } catch {
+    return safeSend(ws, ["error", `Unknown room: ${room}`]);
+  }
   const seatMap = roomSeats.get(room)!;
   const seatInfo = seatMap.get(seat);
   if (!seatInfo) return;
@@ -318,8 +286,11 @@ function handleUpdatePoint(ws: WebSocketWithRoom, room: RoomName, seat: number, 
 }
 
 function handleRemoveKursi(ws: WebSocketWithRoom, room: RoomName, seat: number) {
-  try { assertValidRoom(room); } catch { return safeSend(ws, ["error", `Unknown room: ${room}`]); }
-
+  try {
+    assertValidRoom(room);
+  } catch {
+    return safeSend(ws, ["error", `Unknown room: ${room}`]);
+  }
   resetSeat(roomSeats.get(room)!.get(seat)!);
   saveSeatToKv(room, seat, roomSeats.get(room)!.get(seat)!);
   for (const c of clients) c.numkursi?.delete(seat);
@@ -327,8 +298,23 @@ function handleRemoveKursi(ws: WebSocketWithRoom, room: RoomName, seat: number) 
   broadcastRoomUserCount(room);
 }
 
-function handleUpdateKursi(ws: WebSocketWithRoom, room: RoomName, seat: number, noimageUrl: string, namauser: string, color: string, itembawah: number, itematas: number, vip: boolean, viptanda: number) {
-  try { assertValidRoom(room); } catch { return safeSend(ws, ["error", `Unknown room: ${room}`]); }
+function handleUpdateKursi(
+  ws: WebSocketWithRoom,
+  room: RoomName,
+  seat: number,
+  noimageUrl: string,
+  namauser: string,
+  color: string,
+  itembawah: number,
+  itematas: number,
+  vip: boolean,
+  viptanda: number,
+) {
+  try {
+    assertValidRoom(room);
+  } catch {
+    return safeSend(ws, ["error", `Unknown room: ${room}`]);
+  }
 
   const seatInfo: SeatInfo = { noimageUrl, namauser, color, itembawah, itematas, vip, viptanda, points: [] };
   if (!updateKursiBuffer.has(room)) updateKursiBuffer.set(room, new Map());
@@ -354,8 +340,50 @@ function handlePrivate(ws: WebSocketWithRoom, idt: string, url: string, msg: str
 }
 
 function handleIsUserOnline(ws: WebSocketWithRoom, target: string, tanda?: string) {
-  const online = Array.from(clients).some(c => c.idtarget === target);
+  const online = Array.from(clients).some((c) => c.idtarget === target);
   safeSend(ws, ["userOnlineStatus", target, online, tanda ?? ""]);
+}
+
+function handleJoinRoom(ws: WebSocketWithRoom, newRoom: RoomName) {
+  try {
+    assertValidRoom(newRoom);
+  } catch {
+    return safeSend(ws, ["error", `Unknown room: ${newRoom}`]);
+  }
+
+  const foundSeat = lockSeat(newRoom, ws);
+  if (foundSeat === null) return safeSend(ws, ["roomFull", newRoom]);
+
+  // kalau pindah dari room lama, kosongkan kursi lama
+  if (ws.roomname && ws.numkursi) {
+    const oldRoom = ws.roomname;
+    for (const s of ws.numkursi) {
+      resetSeat(roomSeats.get(oldRoom)!.get(s)!);
+      saveSeatToKv(oldRoom, s, roomSeats.get(oldRoom)!.get(s)!);
+      broadcastToRoom(oldRoom, ["removeKursi", oldRoom, s]);
+    }
+    broadcastRoomUserCount(oldRoom);
+  }
+
+  ws.roomname = newRoom;
+  ws.numkursi = new Set([foundSeat]);
+  safeSend(ws, ["numberKursiSaya", foundSeat]);
+  if (ws.idtarget) userToSeat.set(ws.idtarget, { room: newRoom, seat: foundSeat });
+
+  // kirim snapshot state lokal (tanpa read KV)
+  const seatMap = roomSeats.get(newRoom)!;
+  const allPoints: any[] = [];
+  const meta: Record<number, Omit<SeatInfo, "points">> = {};
+  for (const [seat, info] of seatMap) {
+    for (const p of info.points) allPoints.push({ seat, ...p });
+    if (info.namauser && !info.namauser.startsWith("__LOCK__")) {
+      const { points, ...rest } = info;
+      meta[seat] = rest;
+    }
+  }
+  safeSend(ws, ["allPointsList", newRoom, allPoints]);
+  safeSend(ws, ["allUpdateKursiList", newRoom, meta]);
+  broadcastRoomUserCount(newRoom);
 }
 
 function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
@@ -364,40 +392,69 @@ function handleMessage(ws: WebSocketWithRoom, dataStr: string) {
     if (!Array.isArray(data) || data.length === 0) return safeSend(ws, ["error", "Invalid message format"]);
     const [evt, ...args] = data;
     switch (evt) {
-      case "setIdTarget": handleSetIdTarget(ws, ...args); break;
-      case "ping": handlePing(ws, ...args); break;
-      case "getAllRoomsUserCount": handleGetAllRoomsUserCount(ws); break;
-      case "getCurrentNumber": safeSend(ws, ["currentNumber", currentNumber]); break;
-      case "joinRoom": handleJoinRoom(ws, ...args); break;
-      case "chat": handleChat(ws, ...args); break;
-      case "updatePoint": handleUpdatePoint(ws, ...args); break;
-      case "removeKursiAndPoint": handleRemoveKursi(ws, ...args); break;
-      case "updateKursi": handleUpdateKursi(ws, ...args); break;
-      case "sendnotif": handleSendNotif(ws, ...args); break;
-      case "private": handlePrivate(ws, ...args); break;
-      case "isUserOnline": handleIsUserOnline(ws, ...args); break;
-      default: safeSend(ws, ["error", "Unknown event"]); break;
+      case "setIdTarget":
+        handleSetIdTarget(ws, ...args);
+        break;
+      case "ping":
+        handlePing(ws, ...args);
+        break;
+      case "getAllRoomsUserCount":
+        handleGetAllRoomsUserCount(ws);
+        break;
+      case "getCurrentNumber":
+        safeSend(ws, ["currentNumber", currentNumber]);
+        break;
+      case "joinRoom":
+        handleJoinRoom(ws, ...args);
+        break;
+      case "chat":
+        handleChat(ws, ...args);
+        break;
+      case "updatePoint":
+        handleUpdatePoint(ws, ...args);
+        break;
+      case "removeKursiAndPoint":
+        handleRemoveKursi(ws, ...args);
+        break;
+      case "updateKursi":
+        handleUpdateKursi(ws, ...args);
+        break;
+      case "sendnotif":
+        handleSendNotif(ws, ...args);
+        break;
+      case "private":
+        handlePrivate(ws, ...args);
+        break;
+      case "isUserOnline":
+        handleIsUserOnline(ws, ...args);
+        break;
+      default:
+        safeSend(ws, ["error", "Unknown event"]);
+        break;
     }
-  } catch (err) { 
-    console.error("Error handling message:", err, "raw:", dataStr); 
+  } catch (err) {
+    console.error("Error handling message:", err, "raw:", dataStr);
   }
 }
 
-// ===== Serve WebSocket =====
+// ===== WebSocket Server =====
 serve((req) => {
   try {
     const upgrade = req.headers.get("upgrade") || "";
-    if (upgrade.toLowerCase() !== "websocket") return new Response("Expected websocket", { status: 400 });
+    if (upgrade.toLowerCase() !== "websocket") {
+      return new Response("Expected websocket", { status: 400 });
+    }
 
     const { socket, response } = Deno.upgradeWebSocket(req);
     const ws = socket as WebSocketWithRoom;
     clients.add(ws);
 
-    ws.onopen = () => { ws.numkursi = new Set<number>(); console.log("Client connected"); };
+    ws.onopen = () => {
+      ws.numkursi = new Set<number>();
+    };
     ws.onmessage = (ev) => handleMessage(ws, ev.data);
     ws.onclose = () => {
       try {
-        console.log("❌ User disconnected:", ws.idtarget ?? "(unknown)");
         if (ws.roomname && ws.numkursi) {
           const seatMap = roomSeats.get(ws.roomname)!;
           for (const seat of ws.numkursi) {
@@ -409,7 +466,7 @@ serve((req) => {
         }
         cleanupBuffers(ws);
       } catch (err) {
-        console.error("❗ Error on close:", err);
+        console.error("Error on close:", err);
       } finally {
         clients.delete(ws);
         ws.numkursi?.clear();
@@ -424,7 +481,7 @@ serve((req) => {
   }
 });
 
-// ===== KV Watchers =====
+// ===== KV Watchers (sinkron lintas instance) =====
 kv.watch([["seat"]], (entries) => {
   for (const e of entries) {
     if (e.value) {
