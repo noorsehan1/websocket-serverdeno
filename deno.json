@@ -1,9 +1,0 @@
-{
-  "tasks": {
-    "dev": "deno run --allow-net main.ts"
-  },
-  "deploy": {
-    "project": "noorsehan1-websocket-s-89",
-    "region": "gcp-us-central1"
-  }
-}
